@@ -105,8 +105,21 @@ $env:FORCE_FALLBACK="true"; uv run --no-sync agent run "test"
 - Answers in French where applicable.
 - ruff + pytest green before stopping.
 
+## Eval (Phase 6 — `eval/`)
+- **golden_set.json** — 10 offline tasks with scripted plans + expectations.
+- **run_eval.py** — runs the real LangGraph pipeline with a deterministic `ScriptedPlanner`
+  (no Ollama); measures success / tool calls / latency / escalation; writes `eval/report.{json,md}`.
+- Run: `uv run --no-sync python eval/run_eval.py` → **10/10 passed**.
+
+## Portfolio docs
+- `README.md` — what-it-is, Mermaid architecture, quickstart, why-it-matters, screenshot gallery.
+- `docs/CASE_STUDY.md` — problem, architecture, the offline-fallback decision, eval numbers.
+- `docs/DEMO_SCRIPT.md` — < 3-min walkthrough.
+- `docs/screenshots/` — drop light/dark captures here (see its README).
+
 ## Phase status
 - ✅ Phase 1 — foundations (schemas, tools, trace, LLM, graph, CLI, frontend scaffold)
 - ✅ Phase 2 — FastAPI API (6 routes + SSE + MCP) · approval flow · 81 tests
 - ✅ Phase 3 — Next.js UI premium (runs list + run detail + SSE live + approval panel)
-- ⬜ Phase 4 — mémoire / multi-agent routing / eval + démo
+- ✅ Phase 6 — portfolio (offline eval 10/10, README, case study, demo script)
+- ⬜ Phase 4 — mémoire / multi-agent routing (deferred)

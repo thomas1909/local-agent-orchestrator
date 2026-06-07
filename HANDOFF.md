@@ -1,85 +1,64 @@
 # HANDOFF — Agent Local (BASWE Project 15)
 
-_Last updated: 2026-06-07 (Phase 3 — Next.js UI)._
+_Last updated: 2026-06-07 (Phase 6 — portfolio finalisation)._
 _Read `CLAUDE.md` first for architecture/config/commands._
 
 ---
 
-## Session close — 2026-06-07 (Phase 3 — Next.js UI premium)
+## Session close — 2026-06-07 (Phase 6 — portfolio)
 
-**Resumed green (81 tests), built Phase 3 frontend from scratch.**
-Backend (Python) untouched — no Python file changed.
+**Resumed green (81 tests), added the portfolio layer. No product code changed**
+(only a new `eval/` harness + docs). Backend and frontend untouched.
 
 **Health at close:**
-- Python: `ruff check .` ✅ · `pytest -v` → **81 passed** (unchanged)
-- Frontend: `npx tsc --noEmit` ✅ · `npm run lint` ✅ (0 warnings) · `npm run build` ✅
-  - 4 routes: `/` (redirect) · `/runs` (static) · `/runs/[id]` (dynamic) · `/_not-found`
-  - First Load JS: 101 kB shared, 14.5 kB per page
+- `ruff check .` ✅ · `pytest -q` → **81 passed** (unchanged)
+- `eval/run_eval.py` → **10/10 passed (100 %)**, fully offline
+- Frontend unchanged since Phase 3 (last build green: 4 routes)
 
 ---
 
-## Phase 3 deliverables
+## Phase 6 deliverables
 
-### Stack frontend (`frontend/`)
-Next.js 15.3.3 (App Router, Turbopack) · TypeScript strict · Tailwind v4 ·
-shadcn new-york (zinc + CSS vars) · next-themes · sonner toasts · lucide-react
-
-### shadcn components installed (via MCP `get_add_command_for_items`)
-button · card · badge · dialog · table · tabs · skeleton · sonner · tooltip · input ·
-textarea · separator · scroll-area · spinner
-
-### Pages
-
-| Route | Fichier | Description |
-|---|---|---|
-| `/` | `app/page.tsx` | Redirect → `/runs` |
-| `/runs` | `app/runs/page.tsx` | Liste searchable, dialog New Run, refresh |
-| `/runs/[id]` | `app/runs/[id]/page.tsx` | Détail run : header + tabs (Résultat/Trace/Plan) + SSE live |
-
-### Composants (`src/components/`)
-
-| Fichier | Rôle |
+### Offline eval (`eval/`)
+| File | Role |
 |---|---|
-| `header.tsx` | Sticky nav + health badge (poll /health 30s) + theme toggle |
-| `theme-provider.tsx` | Wrapper next-themes |
-| `theme-toggle.tsx` | Bouton sun/moon avec tooltip |
-| `status-badge.tsx` | Badge coloré par statut (running/completed/approval_required/failed) |
-| `offline-banner.tsx` | Bannière rouge quand l'API est hors ligne |
-| `new-run-dialog.tsx` | Dialog "Nouvelle tâche" avec chips suggestions + ⌘↵ |
-| `span-tree.tsx` | Arbre spans parent/child cliquable (expand → payload JSON + copy) |
-| `approve-panel.tsx` | Panneau approbation (accept/reject + note) → toast + reload |
-| `tool-result-card.tsx` | Card outil : output code block + copy button + badge OK/Erreur |
+| `golden_set.json` | 10 tasks, each with a scripted plan + expectations (status, answer_contains, tool_calls, escalation) |
+| `run_eval.py` | Runs the real LangGraph pipeline with a deterministic `ScriptedPlanner` (zero Ollama). Measures success / tool calls / latency / escalations. Writes `report.json` + `report.md`. Bypasses corporate proxy for localhost so the offline-RAG path fails fast. |
+| `fixtures/notes.txt` | Seed file for the `read_file` / `search_text` / `list_files` tasks |
+| `report.json` / `report.md` | Generated report (committed as a portfolio artifact) |
 
-### API client TS (`src/lib/api.ts`)
-Typage complet des 6 routes. `ApiError` pour gestion d'erreurs. Timeout configurable.
-`NEXT_PUBLIC_API_URL=http://localhost:8100` via `.env.local`.
+**Coverage:** calculator numeric correctness (3), file tools (3), offline-safe RAG (1),
+multi-step plan (1), HIGH-risk escalation (1), post-approval execution (1).
+**Result:** 10/10, 10 tool calls, 1 escalation, orchestration overhead median 0 ms.
 
-### UX features
-- **SSE live** : `/runs/[id]/stream` branché sur EventSource ; span tree se peuple en temps réel
-- **Approval flow UI** : si `status=approval_required`, panneau `ApprovePanel` avec bouttons
-  accept/reject → toast → reload automatique
-- **Offline** : `OfflineBanner` + message d'erreur sur toutes les pages en cas d'API down
-- **Skeletons** : loading state miroir de la mise en page résultat
-- **Copy button** : code blocks pour outputs d'outils et payloads de spans
-- **Search** : filtre client-side sur la liste des runs
-- **Responsive** : layout max-w-6xl centré, wrapping des badges/métriques
+**Key design choice:** the eval uses a `ScriptedPlanner` (fixed `ExecutionPlan` per task,
+delegates AgentResult/ReviewResult to the deterministic fallback) so it measures
+*orchestration* — tool routing, numeric results, HIGH-risk escalation, approved re-run —
+independently of LLM quality, and runs with no quota.
+
+### Portfolio docs
+| File | Role |
+|---|---|
+| `README.md` | Portfolio-ready (English): what-it-is, Mermaid architecture, why-it-matters, quickstart, eval numbers, screenshot gallery, link to the 6-RAG project |
+| `docs/CASE_STUDY.md` | Problem → architecture → the deterministic offline-fallback decision → eval numbers → next steps |
+| `docs/DEMO_SCRIPT.md` | Timed < 3-min demo (pitch → launch → plan/tools/trace → approval flow → tests+eval) |
+| `docs/screenshots/` | Placeholder + naming guide for the 6 light/dark captures |
 
 ---
 
-## NEXT — Phase 4 (ne pas commencer avant validation Phase 3)
+## NEXT — Phase 4 (deferred) + capture
 
-1. **Mémoire** — injecter les N derniers runs dans le prompt du planificateur.
-   TraceStore déjà persisté en SQLite ; il suffit d'un `get_recent_runs()`.
-2. **Multi-agent routing** — ajouter un nœud `route` avant `plan` qui dispatch
-   vers un agent spécialisé (fiscal / math / fichiers).
-3. **Eval & démo** — 18 questions labellisées (analogie avec 6-RAG eval) pour mesurer
-   le taux de réponse correcte avec Ollama local vs cloud.
-4. **Docker** — `frontend` service Next.js dans `docker-compose.yml` (dépend de l'API).
+1. **Take the 6 screenshots** (light + dark) per `docs/screenshots/README.md` and
+   the README gallery — the only remaining manual step for a recruiter-ready repo.
+   Pre-seed runs: one completed, one `approval_required`, optionally one `failed`.
+2. **Record the < 3-min demo** following `docs/DEMO_SCRIPT.md`.
+3. **Memory** — `get_recent_runs()` on TraceStore → inject last N runs into the planner prompt.
+4. **Multi-agent routing** — a `route` node before `plan` dispatching to a specialist.
+5. **Answer-quality eval** — a model-on eval scoring correctness vs labelled references.
 
 ### Contraintes inchangées
-- Tests JAMAIS avec un vrai Ollama.
-- ruff + pytest verts sur le backend.
-- Build Next.js doit passer avant tout arrêt.
+- Tests JAMAIS avec un vrai Ollama (eval inclus: `ScriptedPlanner` + fallback).
+- ruff + pytest verts sur le backend; build Next.js vert.
 - Ne PAS toucher au projet 6-RAG.
 
 ---
@@ -88,22 +67,23 @@ Typage complet des 6 routes. `ApiError` pour gestion d'erreurs. Timeout configur
 
 ```powershell
 # Backend (depuis 7-Agent-Local/)
-uv run --no-sync pytest -q              # 81 passed
-uv run --no-sync ruff check .           # All checks passed
-$env:PYTHONPATH = "src"
+uv run --no-sync pytest -q                       # 81 passed
+uv run --no-sync ruff check .                    # clean
+$env:FORCE_FALLBACK="true"
+uv run --no-sync python eval/run_eval.py         # 10/10 → eval/report.{json,md}
+
+$env:PYTHONPATH="src"
 uv run --no-sync uvicorn agent.api.main:app --port 8100 --reload
 
 # Frontend (depuis 7-Agent-Local/frontend/)
 npm run dev        # → http://localhost:3000
-npm run build      # vérification build production
-npm run lint       # 0 warnings
 ```
 
-## Captures attendues (portfolio)
+## Captures attendues (placer dans `docs/screenshots/`)
 
-1. **Page /runs, light** : table avec 3-4 runs, badges colorés, bouton "Nouveau run"
-2. **Dialog New Run, dark** : textarea + chips suggestion + ⌘↵
-3. **Page détail, onglet Résultat** : réponse texte + tool result card (output RAG fiscal)
-4. **Page détail, onglet Trace, dark** : arbre de spans déployé (intake→plan→tool:rag_fiscal→write→review)
-5. **Approval panel** : panneau amber avec badge HIGH-risk + boutons approve/reject
-6. **Bannière offline** : rouge, avec commande uvicorn
+1. `runs-{light,dark}.png` — liste des runs + badges + bouton "New run"
+2. `new-run-{light,dark}.png` — dialog : textarea + chips + ⌘↵
+3. `detail-result-{light,dark}.png` — onglet Résultat : réponse + tool output card
+4. `detail-trace-{light,dark}.png` — onglet Trace : arbre de spans déployé
+5. `approval-{light,dark}.png` — panneau amber HIGH-risk + accept/reject
+6. `offline-{light,dark}.png` — bannière rouge (arrêter l'API pour capturer)

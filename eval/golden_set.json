@@ -1,0 +1,152 @@
+{
+  "description": "Golden set for the agent orchestrator — fully offline (FORCE_FALLBACK / scripted planner). Each task ships a deterministic plan and the expectations the run must satisfy. The eval measures the ORCHESTRATION (tool routing, numeric correctness, human-in-the-loop escalation, post-approval execution), not LLM quality.",
+  "tasks": [
+    {
+      "id": "calc_multiply",
+      "title": "Calcul direct (multiplication)",
+      "question": "Combien font 1850 × 12 ?",
+      "plan": [
+        {
+          "description": "Évaluer l'expression arithmétique",
+          "tool_calls": [
+            { "tool_name": "calculator", "arguments": { "expression": "1850 * 12" } }
+          ]
+        }
+      ],
+      "expect": { "status": "completed", "answer_contains": "22200", "tool_calls": 1, "escalation": false }
+    },
+    {
+      "id": "calc_tax_rate",
+      "title": "Calcul d'un taux (30%)",
+      "question": "Calcule 30% de 45000.",
+      "plan": [
+        {
+          "description": "Appliquer le taux de 30%",
+          "tool_calls": [
+            { "tool_name": "calculator", "arguments": { "expression": "45000 * 0.30" } }
+          ]
+        }
+      ],
+      "expect": { "status": "completed", "answer_contains": "13500", "tool_calls": 1, "escalation": false }
+    },
+    {
+      "id": "calc_quotient",
+      "title": "Division (parts de quotient familial)",
+      "question": "Divise 8000 par 2.5 parts.",
+      "plan": [
+        {
+          "description": "Diviser le montant par le nombre de parts",
+          "tool_calls": [
+            { "tool_name": "calculator", "arguments": { "expression": "8000 / 2.5" } }
+          ]
+        }
+      ],
+      "expect": { "status": "completed", "answer_contains": "3200", "tool_calls": 1, "escalation": false }
+    },
+    {
+      "id": "list_dir",
+      "title": "Lister un dossier (list_files)",
+      "question": "Liste les fichiers du dossier eval/fixtures.",
+      "plan": [
+        {
+          "description": "Lister le contenu du dossier",
+          "tool_calls": [
+            { "tool_name": "list_files", "arguments": { "path": "eval/fixtures" } }
+          ]
+        }
+      ],
+      "expect": { "status": "completed", "answer_contains": "notes.txt", "tool_calls": 1, "escalation": false }
+    },
+    {
+      "id": "read_doc",
+      "title": "Lire un fichier (read_file)",
+      "question": "Lis le fichier eval/fixtures/notes.txt.",
+      "plan": [
+        {
+          "description": "Lire le contenu du fichier",
+          "tool_calls": [
+            { "tool_name": "read_file", "arguments": { "path": "eval/fixtures/notes.txt" } }
+          ]
+        }
+      ],
+      "expect": { "status": "completed", "answer_contains": "barème", "tool_calls": 1, "escalation": false }
+    },
+    {
+      "id": "search_pattern",
+      "title": "Rechercher un motif (search_text)",
+      "question": "Cherche 'plafond' dans eval/fixtures.",
+      "plan": [
+        {
+          "description": "Rechercher le motif dans les fichiers",
+          "tool_calls": [
+            { "tool_name": "search_text", "arguments": { "pattern": "plafond", "path": "eval/fixtures" } }
+          ]
+        }
+      ],
+      "expect": { "status": "completed", "answer_contains": "plafond", "tool_calls": 1, "escalation": false }
+    },
+    {
+      "id": "rag_offline_safe",
+      "title": "Outil RAG fiscal — dégradation propre hors-ligne",
+      "question": "Quel est le plafond du quotient familial ?",
+      "plan": [
+        {
+          "description": "Interroger la base documentaire fiscale",
+          "tool_calls": [
+            { "tool_name": "rag_fiscal", "arguments": { "question": "Quel est le plafond du quotient familial ?" } }
+          ]
+        }
+      ],
+      "expect": { "status": "completed", "answer_contains": "", "tool_calls": 1, "escalation": false }
+    },
+    {
+      "id": "multi_step",
+      "title": "Plan multi-étapes (calculator + rag_fiscal)",
+      "question": "Calcule 1000 × 12 puis cherche le barème.",
+      "plan": [
+        {
+          "description": "Calculer le total annuel",
+          "tool_calls": [
+            { "tool_name": "calculator", "arguments": { "expression": "1000 * 12" } }
+          ]
+        },
+        {
+          "description": "Chercher le barème dans la base fiscale",
+          "tool_calls": [
+            { "tool_name": "rag_fiscal", "arguments": { "question": "barème de l'impôt" } }
+          ]
+        }
+      ],
+      "expect": { "status": "completed", "answer_contains": "12000", "tool_calls": 2, "escalation": false }
+    },
+    {
+      "id": "high_risk_escalation",
+      "title": "Escalade humaine sur outil à risque élevé",
+      "question": "Supprime le fichier temporaire obsolete.txt.",
+      "plan": [
+        {
+          "description": "Supprimer le fichier",
+          "tool_calls": [
+            { "tool_name": "delete_file", "arguments": { "path": "obsolete.txt" } }
+          ]
+        }
+      ],
+      "expect": { "status": "approval_required", "answer_contains": "Approbation", "tool_calls": 0, "escalation": true }
+    },
+    {
+      "id": "high_risk_approved",
+      "title": "Exécution après approbation humaine",
+      "question": "Supprime le fichier temporaire obsolete.txt (approuvé).",
+      "approved": true,
+      "plan": [
+        {
+          "description": "Supprimer le fichier (après approbation)",
+          "tool_calls": [
+            { "tool_name": "delete_file", "arguments": { "path": "obsolete.txt" } }
+          ]
+        }
+      ],
+      "expect": { "status": "completed", "answer_contains": "simulé", "tool_calls": 1, "escalation": false }
+    }
+  ]
+}
