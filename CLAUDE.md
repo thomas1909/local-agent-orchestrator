@@ -9,6 +9,22 @@ OllamaClient (instructor structured outputs) + deterministic offline fallback.
 Python 3.11 · `uv` · Pydantic v2 · pydantic-settings · LangGraph · instructor ·
 ollama (Python client) · Typer · httpx · rich · pytest · ruff.
 
+## API (Phase 2 — `src/agent/api/`, port :8100)
+- **schemas.py** — API DTOs: `RunRequest`, `RunCreateResponse`, `RunSummary`, `RunDetail`,
+  `ApproveRequest`, `ApproveResponse`, `HealthResponse`.
+- **deps.py** — Lazy singletons (`get_llm` / `get_registry` / `get_trace`); overridable via
+  `app.dependency_overrides` in tests; `reset_deps()` for teardown.
+- **runner.py** — `execute_run_sync` (sync LangGraph call, runs in thread) + `execute_run`
+  (async wrapper for `BackgroundTasks`).
+- **main.py** — FastAPI app on :8100: `POST /run` · `GET /runs` · `GET /runs/{id}` ·
+  `POST /runs/{id}/approve` · `GET /health` · `GET /runs/{id}/stream` (SSE DB-polling).
+  CORS enabled (localhost:3000/3001). MCP mounted via `FastApiMCP.mount_http()` at `/mcp`.
+
+### Approval flow (Phase 2)
+`POST /run` → status `approval_required` if HIGH-risk tool in plan.
+`POST /runs/{id}/approve {decision: accept}` → re-runs with `approved=True`; HIGH-risk tools
+now execute → status `completed`. `reject` → status `failed`.
+
 ## Architecture (`src/agent/`)
 - **schemas.py** — 10 Pydantic v2 models: TaskRequest, ToolCall, SubTask,
   ExecutionPlan, ToolResult, AgentResult, ReviewResult, ApprovalRequest,
@@ -42,6 +58,16 @@ TRACE_DB_PATH=data/traces.db
 FORCE_FALLBACK=false   # set true to run 100% offline, no Ollama quota
 ```
 
+## Config (`.env` / env vars)
+```
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:1.7b-q4_K_M
+RAG_API_URL=http://127.0.0.1:8000
+TRACE_DB_PATH=data/traces.db
+FORCE_FALLBACK=false   # set true to run 100% offline, no Ollama quota
+AGENT_PORT=8100        # RAG API occupies :8000
+```
+
 ## Commands
 > **Windows + OneDrive gotcha:** same as 6-RAG — use `--link-mode=copy`.
 
@@ -54,6 +80,11 @@ uv run --no-sync pytest -v
 
 # Lint
 uv run --no-sync ruff check .
+
+# Start API (port 8100)
+$env:PYTHONPATH="src"; uv run --no-sync uvicorn agent.api.main:app --port 8100 --reload
+# OpenAPI docs: http://localhost:8100/docs
+# MCP endpoint: http://localhost:8100/mcp
 
 # CLI
 uv run --no-sync agent run "Quel est le barème de l'IR ?"
@@ -76,5 +107,5 @@ $env:FORCE_FALLBACK="true"; uv run --no-sync agent run "test"
 
 ## Phase status
 - ✅ Phase 1 — foundations (schemas, tools, trace, LLM, graph, CLI, frontend scaffold)
-- ⬜ Phase 2 — FastAPI wrapper + Next.js UI
-- ⬜ Phase 3 — multi-agent routing + memory
+- ✅ Phase 2 — FastAPI API (6 routes + SSE + MCP) · approval flow · 81 tests
+- ⬜ Phase 3 — Next.js UI (runs timeline + approve button) + multi-agent routing

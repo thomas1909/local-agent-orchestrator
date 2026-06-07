@@ -30,11 +30,12 @@ class GraphState(TypedDict, total=False):
     review: ReviewResult | None
     approval: ApprovalRequest | None
     approval_needed: bool
+    approved: bool          # set to True when human approved a HIGH-risk run
     run_id: str
     _root_span: str
 
 
-def _initial_state(task: TaskRequest) -> GraphState:
+def _initial_state(task: TaskRequest, approved: bool = False) -> GraphState:
     return {
         "task": task,
         "plan": None,
@@ -43,6 +44,7 @@ def _initial_state(task: TaskRequest) -> GraphState:
         "review": None,
         "approval": None,
         "approval_needed": False,
+        "approved": approved,
         "run_id": str(uuid.uuid4()),
         "_root_span": "",
     }
@@ -103,8 +105,8 @@ def _research(state: GraphState, *, registry: ToolRegistry, trace: TraceStore) -
                 )
                 continue
 
-            if registry.get_risk(call.tool_name) == RiskLevel.HIGH:
-                # Do not execute HIGH risk tools without explicit human approval
+            if registry.get_risk(call.tool_name) == RiskLevel.HIGH and not state.get("approved"):
+                # Block HIGH risk tools unless the run was explicitly approved
                 approval_needed = True
                 continue
 
@@ -248,9 +250,10 @@ def run_task(
     llm: OllamaClient,
     registry: ToolRegistry,
     trace: TraceStore,
+    approved: bool = False,
 ) -> GraphState:
     run_id = trace.new_run(task)
-    state = _initial_state(task)
+    state = _initial_state(task, approved=approved)
     state["run_id"] = run_id
     graph = build_graph(llm=llm, registry=registry, trace=trace)
     final = graph.invoke(state)

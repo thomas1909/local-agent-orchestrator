@@ -82,11 +82,43 @@ class TraceStore:
         self._conn.commit()
         return True
 
+    def set_run_status(self, run_id: str, status: str) -> None:
+        """Generic status update; alias for finish_run with any status."""
+        self._conn.execute("UPDATE runs SET status=? WHERE id=?", (status, run_id))
+        self._conn.commit()
+
+    def get_run_status(self, run_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT status FROM runs WHERE id=?", (run_id,)
+        ).fetchone()
+        return row["status"] if row else None
+
+    def get_run_task(self, run_id: str) -> TaskRequest | None:
+        row = self._conn.execute(
+            "SELECT task_json FROM runs WHERE id=?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return TaskRequest.model_validate_json(row["task_json"])
+
     def list_runs(self) -> list[dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT id, status, created_at FROM runs ORDER BY created_at DESC"
+            "SELECT id, status, created_at, task_json FROM runs ORDER BY created_at DESC"
         ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            try:
+                task = TaskRequest.model_validate_json(r["task_json"])
+                question = task.question
+            except Exception:
+                question = ""
+            result.append({
+                "id": r["id"],
+                "status": r["status"],
+                "created_at": r["created_at"],
+                "question": question,
+            })
+        return result
 
     # ── Spans ─────────────────────────────────────────────────────────────────
 

@@ -1,91 +1,62 @@
 # HANDOFF — Agent Local (BASWE Project 15)
 
-_Last updated: 2026-06-07 (Phase 1 — foundations backend)._
+_Last updated: 2026-06-07 (Phase 2 — FastAPI API + approval flow)._
 _Read `CLAUDE.md` first for architecture/config/commands._
 
-## Session close — 2026-06-07 (Phase 1 — foundations)
+---
 
-**Nouveau projet créé from scratch dans `7-Agent-Local/`** (séparé de 6-RAG).
-La session précédente avait échoué sur une erreur 429 Ollama avant toute écriture
-sur disque — Phase 1 était à 0 % et a été construite entièrement dans cette session.
+## Session close — 2026-06-07 (Phase 2 — FastAPI API)
+
+**Resumed green (59 tests), built Phase 2 from scratch.**
+Did NOT touch Phase 1 code except two minimal, non-breaking additions:
+- `graph.py`: added `approved: bool` to `GraphState` + `_initial_state`; `_research` now
+  skips blocking HIGH-risk tools when `approved=True`; `run_task()` accepts `approved=`.
+- `trace.py`: added `set_run_status`, `get_run_status`, `get_run_task`, enriched `list_runs`
+  (now returns `question` from stored task). All 59 Phase 1 tests still pass unchanged.
 
 **Health at close:**
 - `ruff check .` → **All checks passed!**
-- `pytest -v` → **59 passed**, 0 failed, 7.63 s
-- AUCUN test n'appelle un vrai modèle Ollama : tout passe via `force_fallback=True`
-  ou des `_MockLLM` inline.
+- `pytest -v` → **81 passed**, 0 failed, 43.8 s
+- 0 Ollama calls in any test — all via `force_fallback=True` or `_HighRiskLLM` mock.
 
 ---
 
-## Ce qui est fait (Phase 1 complète)
+## Phase 2 deliverables
 
-### Schémas Pydantic v2 (`src/agent/schemas.py`)
-10 modèles : `TaskRequest` · `ToolCall` · `SubTask` · `ExecutionPlan` ·
-`ToolResult` · `AgentResult` · `ReviewResult` · `ApprovalRequest` ·
-`TraceSpan` · `RunRecord`. Plus `RiskLevel(StrEnum)` (LOW/MEDIUM/HIGH).
+### FastAPI app (`src/agent/api/`)
 
-### Config (`src/agent/config.py`)
-`AgentConfig` (pydantic-settings) : `OLLAMA_BASE_URL` · `OLLAMA_MODEL` ·
-`RAG_API_URL` · `TRACE_DB_PATH` · `FORCE_FALLBACK`.
+| File | Role |
+|---|---|
+| `schemas.py` | API DTOs: RunRequest · RunCreateResponse · RunSummary · RunDetail · ApproveRequest · ApproveResponse · HealthResponse |
+| `deps.py` | Lazy singletons `get_llm / get_registry / get_trace`; `reset_deps()` for tests |
+| `runner.py` | `execute_run_sync` (LangGraph in thread) + `execute_run` (async BackgroundTasks wrapper) |
+| `main.py` | FastAPI app on :8100, CORS, MCP (`FastApiMCP.mount_http()` at `/mcp`), 6 routes |
 
-### ToolRegistry (`src/agent/tools/registry.py`)
-Register / get_risk / has_tool / execute (capture inputs + outputs + latency_ms
-dans `ToolResult`) / schema_for_llm. Decorator `@registry.tool(...)` aussi disponible.
+### Routes
 
-### 5 outils safe (`src/agent/tools/builtins.py`)
-| Outil | Risque | Description |
+| Method | Path | Description |
 |---|---|---|
-| `list_files` | LOW | Lister fichiers/dossiers |
-| `read_file` | LOW | Lire un fichier texte |
-| `search_text` | LOW | Chercher un motif textuel (sans grep shell) |
-| `calculator` | LOW | Calcul arithmétique **sans eval()** — AST seulement |
-| `rag_fiscal` | MEDIUM | POST `/query` sur l'API 6-RAG (:8000) ; message FR si offline |
+| GET | `/health` | `{status, api, ollama: online\|offline, version}` |
+| POST | `/run` | Submit task → `{run_id, status}` (background exec) |
+| GET | `/runs` | List all runs (most recent first) |
+| GET | `/runs/{id}` | Full detail: task + status + plan + result + review + approval + spans |
+| POST | `/runs/{id}/approve` | `{decision: accept\|reject\|modify, note?}` |
+| GET | `/runs/{id}/stream` | SSE — emits spans as they're written + `{event:done,status}` |
 
-`build_default_registry(rag_api_url=...)` crée le registry prêt à l'emploi.
+### Approval flow
+1. `POST /run` → graph encounters HIGH-risk tool → `approval_required` status
+2. `GET /runs/{id}` shows `approval` object with `high_risk_tools` list
+3. `POST /runs/{id}/approve {decision: accept}` → re-runs graph with `approved=True`
+   → HIGH-risk tools execute → status becomes `completed`
+4. `POST /runs/{id}/approve {decision: reject}` → status becomes `failed`
 
-### TraceStore SQLite (`src/agent/trace.py`)
-- Tables `runs` + `spans` (SQLite, `:memory:` pour les tests).
-- `new_run` / `finish_run` / `save_approval` / `approve_run` / `list_runs`.
-- `start_span` / `end_span` (parent_id pour la hiérarchie, duration_ms auto-calculé).
-- `export_run_json(run_id)` → JSON complet (RunRecord).
-- Context manager `trace.span(run_id, name)` disponible.
-
-### OllamaClient (`src/agent/llm.py`)
-- `instructor.from_ollama()` pour les structured outputs.
-- `force_fallback=True` → bypass total d'Ollama (pour les tests).
-- Détection auto de disponibilité via `/api/tags` (timeout 2s).
-- Fallback déterministe par type de response_model :
-  - `ExecutionPlan` → plan avec appel `rag_fiscal`
-  - `AgentResult` → message `[Mode hors-ligne]`
-  - `ReviewResult` → verdict `approved`
-
-### LangGraph graph (`src/agent/graph.py`)
-5 nœuds : **intake → plan → research → write → review → END**
-- `intake` : démarre le trace span racine.
-- `plan` : appelle OllamaClient (ou fallback) → `ExecutionPlan`.
-- `research` : exécute les tool calls. **Les outils HIGH risk ne sont PAS
-  exécutés** → met `approval_needed=True`.
-- `write` : synthétise via LLM ou use directement les tool results en fallback.
-- `review` : si `approval_needed` → verdict `approval_required` + crée
-  `ApprovalRequest` + sauvegarde dans TraceStore.
-
-`run_task(task, llm, registry, trace)` : wrapper de haut niveau.
-
-### CLI Typer (`src/agent/cli.py`)
-```
-agent run <question>          # Lance un run complet
-agent runs list               # Liste les runs passés (depuis SQLite)
-agent runs show <run_id>      # Affiche le JSON complet du run
-agent approve <run_id>        # Approuve un run en attente
-```
-
-### Frontend scaffold (`frontend/`)
-Next.js 15 + TypeScript + Tailwind v4. Bare placeholder (page.tsx + layout.tsx).
-**Pas d'UI complexe** — à construire en Phase 2.
+### MCP
+`FastApiMCP` mounts at `/mcp` (HTTP transport). All API routes are exposed as MCP tools.
+Connect any MCP client to `http://localhost:8100/mcp`.
 
 ---
 
-## Tests (59, 0 Ollama call)
+## Tests (81, 0 Ollama calls)
 
 | Catégorie | Fichier | Tests |
 |---|---|---|
@@ -93,48 +64,52 @@ Next.js 15 + TypeScript + Tailwind v4. Bare placeholder (page.tsx + layout.tsx).
 | Permissions + logging | `test_tools.py` | 19 |
 | TraceStore spans | `test_trace.py` | 13 |
 | Fallback déterministe | `test_llm.py` | 9 |
-| Approval trigger HIGH risk | `test_graph.py` | 9 |
+| Approval trigger + graph | `test_graph.py` | 9 |
+| **API routes (Phase 2)** | **`test_api.py`** | **22** |
 
 ---
 
-## NEXT — Phase 2 (ne pas commencer avant validation Phase 1)
+## NEXT — Phase 3 (ne pas commencer avant validation Phase 2)
 
-1. **FastAPI wrapper** — exposer le graph via `POST /run` + `GET /runs` +
-   `GET /runs/{id}` + `POST /runs/{id}/approve`. Réutiliser `TraceStore` +
-   `run_task()` tels quels. Schémas OpenAPI dérivés des modèles Pydantic existants.
-2. **Next.js UI** — page Question (textarea + chip suggestions), page Runs
-   (list + detail avec timeline des spans), bouton Approve pour les runs en attente.
-   API client TS miroir des schémas Python.
-3. **Multi-agent routing** (Phase 3) — ajouter un nœud `route` avant `plan`
-   pour sélectionner l'agent spécialisé (fiscal / recherche / calcul).
+1. **Next.js UI** — brancher le scaffold existant (`frontend/`) sur l'API :8100 :
+   - Page **Runs** (`/runs`) : tableau des runs avec status badge, lien vers le détail
+   - Page **Run detail** (`/runs/[id]`) : timeline des spans, réponse, bouton Approve
+   - Page **New run** (`/`) : textarea + chip suggestions + ⌘↵, SSE live progress bar
+   - API client TS : miroir des schémas `RunSummary` / `RunDetail` / `ApproveRequest`
+2. **Multi-agent routing** — ajouter un nœud `route` avant `plan` qui dispatch vers
+   un agent spécialisé (fiscal / math / fichiers) selon la question.
+3. **Mémoire** — injecter l'historique des runs précédents dans le prompt du planificateur.
 
 ### Contraintes inchangées
 - Tests JAMAIS avec un vrai Ollama.
-- `calculator` sans `eval()`.
-- HIGH risk tools jamais exécutés sans approval.
+- Calculator sans `eval()`.
+- HIGH-risk tools jamais exécutés sans approval.
 - ruff + pytest verts avant de s'arrêter.
 - Ne PAS toucher au projet 6-RAG.
+- Ne PAS changer l'API (`/run`, `/runs`, etc.) sans ajouter des tests.
 
 ---
 
 ## Commandes de reprise
 
-```bash
-cd ".../Projets_perso/7-Agent-Local"
+```powershell
+cd "C:\...\Projets_perso\7-Agent-Local"
 
-# Env (OneDrive → link-mode=copy)
-uv sync --extra dev --link-mode=copy
+# Santé
+uv run --no-sync ruff check .
+uv run --no-sync pytest -v     # 81 passed attendus
 
-# Vérification santé
-uv run --no-sync ruff check .               # doit afficher: All checks passed!
-uv run --no-sync pytest -v                  # doit afficher: 59 passed
+# Démarrer l'API (port 8100 — RAG fiscal occupe :8000)
+$env:PYTHONPATH="src"
+uv run --no-sync uvicorn agent.api.main:app --port 8100 --reload
 
-# CLI offline (FORCE_FALLBACK évite tout quota)
+# Tester l'API manuellement
+curl http://localhost:8100/health
+curl -X POST http://localhost:8100/run -H "Content-Type: application/json" `
+     -d '{"question":"Quel est le barème de l'\''impôt sur le revenu ?"}'
+
+# CLI offline (toujours dispo)
 $env:FORCE_FALLBACK="true"
-uv run --no-sync agent run "Quel est le barème de l'IR ?"
+uv run --no-sync agent run "test question"
 uv run --no-sync agent runs list
-uv run --no-sync agent runs show <run_id>
-
-# CLI avec Ollama (si disponible)
-uv run --no-sync agent run "Quel est le plafond du quotient familial ?"
 ```
