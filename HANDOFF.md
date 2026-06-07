@@ -1,115 +1,109 @@
 # HANDOFF — Agent Local (BASWE Project 15)
 
-_Last updated: 2026-06-07 (Phase 2 — FastAPI API + approval flow)._
+_Last updated: 2026-06-07 (Phase 3 — Next.js UI)._
 _Read `CLAUDE.md` first for architecture/config/commands._
 
 ---
 
-## Session close — 2026-06-07 (Phase 2 — FastAPI API)
+## Session close — 2026-06-07 (Phase 3 — Next.js UI premium)
 
-**Resumed green (59 tests), built Phase 2 from scratch.**
-Did NOT touch Phase 1 code except two minimal, non-breaking additions:
-- `graph.py`: added `approved: bool` to `GraphState` + `_initial_state`; `_research` now
-  skips blocking HIGH-risk tools when `approved=True`; `run_task()` accepts `approved=`.
-- `trace.py`: added `set_run_status`, `get_run_status`, `get_run_task`, enriched `list_runs`
-  (now returns `question` from stored task). All 59 Phase 1 tests still pass unchanged.
+**Resumed green (81 tests), built Phase 3 frontend from scratch.**
+Backend (Python) untouched — no Python file changed.
 
 **Health at close:**
-- `ruff check .` → **All checks passed!**
-- `pytest -v` → **81 passed**, 0 failed, 43.8 s
-- 0 Ollama calls in any test — all via `force_fallback=True` or `_HighRiskLLM` mock.
+- Python: `ruff check .` ✅ · `pytest -v` → **81 passed** (unchanged)
+- Frontend: `npx tsc --noEmit` ✅ · `npm run lint` ✅ (0 warnings) · `npm run build` ✅
+  - 4 routes: `/` (redirect) · `/runs` (static) · `/runs/[id]` (dynamic) · `/_not-found`
+  - First Load JS: 101 kB shared, 14.5 kB per page
 
 ---
 
-## Phase 2 deliverables
+## Phase 3 deliverables
 
-### FastAPI app (`src/agent/api/`)
+### Stack frontend (`frontend/`)
+Next.js 15.3.3 (App Router, Turbopack) · TypeScript strict · Tailwind v4 ·
+shadcn new-york (zinc + CSS vars) · next-themes · sonner toasts · lucide-react
 
-| File | Role |
+### shadcn components installed (via MCP `get_add_command_for_items`)
+button · card · badge · dialog · table · tabs · skeleton · sonner · tooltip · input ·
+textarea · separator · scroll-area · spinner
+
+### Pages
+
+| Route | Fichier | Description |
+|---|---|---|
+| `/` | `app/page.tsx` | Redirect → `/runs` |
+| `/runs` | `app/runs/page.tsx` | Liste searchable, dialog New Run, refresh |
+| `/runs/[id]` | `app/runs/[id]/page.tsx` | Détail run : header + tabs (Résultat/Trace/Plan) + SSE live |
+
+### Composants (`src/components/`)
+
+| Fichier | Rôle |
 |---|---|
-| `schemas.py` | API DTOs: RunRequest · RunCreateResponse · RunSummary · RunDetail · ApproveRequest · ApproveResponse · HealthResponse |
-| `deps.py` | Lazy singletons `get_llm / get_registry / get_trace`; `reset_deps()` for tests |
-| `runner.py` | `execute_run_sync` (LangGraph in thread) + `execute_run` (async BackgroundTasks wrapper) |
-| `main.py` | FastAPI app on :8100, CORS, MCP (`FastApiMCP.mount_http()` at `/mcp`), 6 routes |
+| `header.tsx` | Sticky nav + health badge (poll /health 30s) + theme toggle |
+| `theme-provider.tsx` | Wrapper next-themes |
+| `theme-toggle.tsx` | Bouton sun/moon avec tooltip |
+| `status-badge.tsx` | Badge coloré par statut (running/completed/approval_required/failed) |
+| `offline-banner.tsx` | Bannière rouge quand l'API est hors ligne |
+| `new-run-dialog.tsx` | Dialog "Nouvelle tâche" avec chips suggestions + ⌘↵ |
+| `span-tree.tsx` | Arbre spans parent/child cliquable (expand → payload JSON + copy) |
+| `approve-panel.tsx` | Panneau approbation (accept/reject + note) → toast + reload |
+| `tool-result-card.tsx` | Card outil : output code block + copy button + badge OK/Erreur |
 
-### Routes
+### API client TS (`src/lib/api.ts`)
+Typage complet des 6 routes. `ApiError` pour gestion d'erreurs. Timeout configurable.
+`NEXT_PUBLIC_API_URL=http://localhost:8100` via `.env.local`.
 
-| Method | Path | Description |
-|---|---|---|
-| GET | `/health` | `{status, api, ollama: online\|offline, version}` |
-| POST | `/run` | Submit task → `{run_id, status}` (background exec) |
-| GET | `/runs` | List all runs (most recent first) |
-| GET | `/runs/{id}` | Full detail: task + status + plan + result + review + approval + spans |
-| POST | `/runs/{id}/approve` | `{decision: accept\|reject\|modify, note?}` |
-| GET | `/runs/{id}/stream` | SSE — emits spans as they're written + `{event:done,status}` |
-
-### Approval flow
-1. `POST /run` → graph encounters HIGH-risk tool → `approval_required` status
-2. `GET /runs/{id}` shows `approval` object with `high_risk_tools` list
-3. `POST /runs/{id}/approve {decision: accept}` → re-runs graph with `approved=True`
-   → HIGH-risk tools execute → status becomes `completed`
-4. `POST /runs/{id}/approve {decision: reject}` → status becomes `failed`
-
-### MCP
-`FastApiMCP` mounts at `/mcp` (HTTP transport). All API routes are exposed as MCP tools.
-Connect any MCP client to `http://localhost:8100/mcp`.
+### UX features
+- **SSE live** : `/runs/[id]/stream` branché sur EventSource ; span tree se peuple en temps réel
+- **Approval flow UI** : si `status=approval_required`, panneau `ApprovePanel` avec bouttons
+  accept/reject → toast → reload automatique
+- **Offline** : `OfflineBanner` + message d'erreur sur toutes les pages en cas d'API down
+- **Skeletons** : loading state miroir de la mise en page résultat
+- **Copy button** : code blocks pour outputs d'outils et payloads de spans
+- **Search** : filtre client-side sur la liste des runs
+- **Responsive** : layout max-w-6xl centré, wrapping des badges/métriques
 
 ---
 
-## Tests (81, 0 Ollama calls)
+## NEXT — Phase 4 (ne pas commencer avant validation Phase 3)
 
-| Catégorie | Fichier | Tests |
-|---|---|---|
-| Schémas | `test_schemas.py` | 12 |
-| Permissions + logging | `test_tools.py` | 19 |
-| TraceStore spans | `test_trace.py` | 13 |
-| Fallback déterministe | `test_llm.py` | 9 |
-| Approval trigger + graph | `test_graph.py` | 9 |
-| **API routes (Phase 2)** | **`test_api.py`** | **22** |
-
----
-
-## NEXT — Phase 3 (ne pas commencer avant validation Phase 2)
-
-1. **Next.js UI** — brancher le scaffold existant (`frontend/`) sur l'API :8100 :
-   - Page **Runs** (`/runs`) : tableau des runs avec status badge, lien vers le détail
-   - Page **Run detail** (`/runs/[id]`) : timeline des spans, réponse, bouton Approve
-   - Page **New run** (`/`) : textarea + chip suggestions + ⌘↵, SSE live progress bar
-   - API client TS : miroir des schémas `RunSummary` / `RunDetail` / `ApproveRequest`
-2. **Multi-agent routing** — ajouter un nœud `route` avant `plan` qui dispatch vers
-   un agent spécialisé (fiscal / math / fichiers) selon la question.
-3. **Mémoire** — injecter l'historique des runs précédents dans le prompt du planificateur.
+1. **Mémoire** — injecter les N derniers runs dans le prompt du planificateur.
+   TraceStore déjà persisté en SQLite ; il suffit d'un `get_recent_runs()`.
+2. **Multi-agent routing** — ajouter un nœud `route` avant `plan` qui dispatch
+   vers un agent spécialisé (fiscal / math / fichiers).
+3. **Eval & démo** — 18 questions labellisées (analogie avec 6-RAG eval) pour mesurer
+   le taux de réponse correcte avec Ollama local vs cloud.
+4. **Docker** — `frontend` service Next.js dans `docker-compose.yml` (dépend de l'API).
 
 ### Contraintes inchangées
 - Tests JAMAIS avec un vrai Ollama.
-- Calculator sans `eval()`.
-- HIGH-risk tools jamais exécutés sans approval.
-- ruff + pytest verts avant de s'arrêter.
+- ruff + pytest verts sur le backend.
+- Build Next.js doit passer avant tout arrêt.
 - Ne PAS toucher au projet 6-RAG.
-- Ne PAS changer l'API (`/run`, `/runs`, etc.) sans ajouter des tests.
 
 ---
 
 ## Commandes de reprise
 
 ```powershell
-cd "C:\...\Projets_perso\7-Agent-Local"
-
-# Santé
-uv run --no-sync ruff check .
-uv run --no-sync pytest -v     # 81 passed attendus
-
-# Démarrer l'API (port 8100 — RAG fiscal occupe :8000)
-$env:PYTHONPATH="src"
+# Backend (depuis 7-Agent-Local/)
+uv run --no-sync pytest -q              # 81 passed
+uv run --no-sync ruff check .           # All checks passed
+$env:PYTHONPATH = "src"
 uv run --no-sync uvicorn agent.api.main:app --port 8100 --reload
 
-# Tester l'API manuellement
-curl http://localhost:8100/health
-curl -X POST http://localhost:8100/run -H "Content-Type: application/json" `
-     -d '{"question":"Quel est le barème de l'\''impôt sur le revenu ?"}'
-
-# CLI offline (toujours dispo)
-$env:FORCE_FALLBACK="true"
-uv run --no-sync agent run "test question"
-uv run --no-sync agent runs list
+# Frontend (depuis 7-Agent-Local/frontend/)
+npm run dev        # → http://localhost:3000
+npm run build      # vérification build production
+npm run lint       # 0 warnings
 ```
+
+## Captures attendues (portfolio)
+
+1. **Page /runs, light** : table avec 3-4 runs, badges colorés, bouton "Nouveau run"
+2. **Dialog New Run, dark** : textarea + chips suggestion + ⌘↵
+3. **Page détail, onglet Résultat** : réponse texte + tool result card (output RAG fiscal)
+4. **Page détail, onglet Trace, dark** : arbre de spans déployé (intake→plan→tool:rag_fiscal→write→review)
+5. **Approval panel** : panneau amber avec badge HIGH-risk + boutons approve/reject
+6. **Bannière offline** : rouge, avec commande uvicorn

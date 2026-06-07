@@ -108,4 +108,5 @@ $env:FORCE_FALLBACK="true"; uv run --no-sync agent run "test"
 ## Phase status
 - ✅ Phase 1 — foundations (schemas, tools, trace, LLM, graph, CLI, frontend scaffold)
 - ✅ Phase 2 — FastAPI API (6 routes + SSE + MCP) · approval flow · 81 tests
-- ⬜ Phase 3 — Next.js UI (runs timeline + approve button) + multi-agent routing
+- ✅ Phase 3 — Next.js UI premium (runs list + run detail + SSE live + approval panel)
+- ⬜ Phase 4 — mémoire / multi-agent routing / eval + démo

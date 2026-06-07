@@ -1,5 +1,8 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from "next"
 
-const nextConfig: NextConfig = {};
+const nextConfig: NextConfig = {
+  // Allow images from localhost (for future avatar/icon needs)
+  images: { remotePatterns: [{ hostname: "localhost" }] },
+}
 
-export default nextConfig;
+export default nextConfig

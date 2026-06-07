@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "shadcn": {
+      "command": "cmd",
+      "args": ["/c", "npx", "shadcn@latest", "mcp"],
+      "cwd": "C:\\Users\\SESA725334\\OneDrive - Schneider Electric\\Documents\\4. Projets\\Projets_perso\\7-Agent-Local\\frontend"
+    }
+  }
+}
