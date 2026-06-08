@@ -102,6 +102,10 @@ npm install
 npm run dev                                   # → http://localhost:3000
 ```
 
+> **Reproducibility:** on a machine with internet access, run `npm install` once from
+> `frontend/` so `@tailwindcss/postcss` is pinned in `package-lock.json` (the original dev
+> environment had no network egress, so the lockfile could not be regenerated there).
+
 **CLI** (no server needed):
 
 ```bash

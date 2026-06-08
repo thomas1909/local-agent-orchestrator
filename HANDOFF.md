@@ -1,7 +1,43 @@
 # HANDOFF — Agent Local (BASWE Project 15)
 
-_Last updated: 2026-06-07 (Phase 6 — portfolio finalisation)._
+_Last updated: 2026-06-08 (Phase 6 — DONE: screenshots captured + 3 bug fixes)._
 _Read `CLAUDE.md` first for architecture/config/commands._
+
+---
+
+## Session close — 2026-06-08 (Phase 6 DONE — screenshots + fixes)
+
+**Phase 6 is now complete.** The 12 portfolio screenshots are captured and the
+gallery in `README.md` renders. Along the way, three real issues that blocked
+recruiter-ready screens were fixed.
+
+**Health at close:**
+- `ruff check .` ✅ · `pytest -q` → **87 passed** (was 81, +6)
+- `eval/run_eval.py` → **10/10 passed (100 %)**, fully offline
+- Frontend now renders **styled** (Tailwind v4 was previously generating no CSS)
+
+**Shipped this session:**
+1. **HIGH-risk demo tool** `delete_file` (sandbox) added to the live registry +
+   a **keyword-aware offline planner** (math→`calculator`, destructive verb→`delete_file`,
+   else→`rag_fiscal`). Makes the human-in-the-loop gate demonstrable in the running app.
+2. **Bug fix — TraceStore never persisted `plan`/`result`/`review`.** The graph built
+   them in memory but only spans were saved, so the API's `RunDetail` always returned
+   `result=null` → the UI Result & Plan tabs were empty in real use. Added 3 JSON columns
+   (`plan_json`/`result_json`/`review_json`) + `save_plan/result/review` + export wiring
+   (with a PRAGMA migration for older DBs).
+3. **Bug fix — frontend had no PostCSS config.** Tailwind v4 (`@import "tailwindcss"`)
+   generated zero utilities → unstyled UI. Added `frontend/postcss.config.mjs` +
+   `@tailwindcss/postcss` devDep.
+
+**Screenshot pipeline:** this machine has **no npm/PyPI egress**, so Playwright can't be
+installed. Captures are produced by `frontend/scripts/capture.mjs` — a zero-dependency
+Chrome DevTools Protocol driver using Node's built-in WebSocket and the Chromium already
+cached under `ms-playwright`. Re-run: seed runs against an API in `FORCE_FALLBACK=true`
+mode (`TRACE_DB_PATH=data/screenshots.db`), write `frontend/.capture-runs.json`, then
+`CAPTURE_MODE=online|offline node scripts/capture.mjs`.
+
+**Reproducibility caveat:** `package-lock.json` was NOT updated (no network here). On a
+machine with internet, run `npm install` once from `frontend/` to pin `@tailwindcss/postcss`.
 
 ---
 
