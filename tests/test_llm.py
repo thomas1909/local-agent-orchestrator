@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from agent.llm import _FALLBACK_MARKER, OllamaClient
-from agent.schemas import AgentResult, ExecutionPlan, ReviewResult
+from agent.schemas import AgentResult, ExecutionPlan, ReviewResult, TaskRequest
 
 
 def _client() -> OllamaClient:
@@ -36,6 +36,33 @@ def test_fallback_plan_passes_question(task):
     plan = client.predict([], ExecutionPlan, task=task)
     args = plan.subtasks[0].tool_calls[0].arguments
     assert args.get("question") == task.question
+
+
+def _first_tool(plan: ExecutionPlan) -> str:
+    return plan.subtasks[0].tool_calls[0].tool_name
+
+
+def test_fallback_routes_math_to_calculator():
+    client = _client()
+    task = TaskRequest(question="Combien font 1850 × 12 ?")
+    plan = client.predict([], ExecutionPlan, task=task)
+    assert _first_tool(plan) == "calculator"
+    assert plan.subtasks[0].tool_calls[0].arguments["expression"] == "1850*12"
+
+
+def test_fallback_routes_destructive_verb_to_high_risk_tool():
+    client = _client()
+    task = TaskRequest(question="Supprime le fichier rapport_2024.txt s'il te plaît")
+    plan = client.predict([], ExecutionPlan, task=task)
+    assert _first_tool(plan) == "delete_file"
+    assert plan.subtasks[0].tool_calls[0].arguments["path"] == "rapport_2024.txt"
+
+
+def test_fallback_routes_plain_question_to_rag():
+    client = _client()
+    task = TaskRequest(question="Quel est le barème de l'impôt sur le revenu ?")
+    plan = client.predict([], ExecutionPlan, task=task)
+    assert _first_tool(plan) == "rag_fiscal"
 
 
 def test_fallback_returns_agent_result(task):

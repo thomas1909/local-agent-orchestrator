@@ -1,6 +1,7 @@
 """OllamaClient with instructor structured outputs + deterministic offline fallback."""
 from __future__ import annotations
 
+import re
 import uuid
 from typing import TypeVar
 
@@ -12,6 +13,42 @@ from agent.schemas import AgentResult, ExecutionPlan, ReviewResult, SubTask, Tas
 T = TypeVar("T", bound=BaseModel)
 
 _FALLBACK_MARKER = "[Mode hors-ligne]"
+
+# Two numbers joined by at least one arithmetic operator (× / x / ÷ accepted).
+_MATH_RE = re.compile(r"-?\d+(?:[.,]\d+)?(?:\s*[-+*/×x÷]\s*-?\d+(?:[.,]\d+)?)+")
+_ACTION_KEYWORDS = (
+    "supprime", "supprimer", "efface", "effacer", "delete", "remove",
+    "exécute l'action", "execute action",
+)
+
+
+def _route_subtask(question: str) -> SubTask:
+    """Deterministic keyword routing for the offline planner.
+
+    math expression → calculator · destructive verb → delete_file (HIGH) · else → rag_fiscal.
+    """
+    q = question.lower()
+    if any(k in q for k in _ACTION_KEYWORDS):
+        m = re.search(r"[\w./\\-]+\.\w+", question)
+        path = m.group(0) if m else "rapport.txt"
+        return SubTask(
+            description=f"Action à risque élevé demandée: {question[:80]}",
+            tool_calls=[ToolCall(tool_name="delete_file", arguments={"path": path})],
+        )
+    m = _MATH_RE.search(question)
+    if m:
+        expr = m.group(0)
+        for src, dst in (("×", "*"), ("x", "*"), ("÷", "/"), (",", ".")):
+            expr = expr.replace(src, dst)
+        expr = re.sub(r"\s+", "", expr)
+        return SubTask(
+            description=f"Calculer: {expr}",
+            tool_calls=[ToolCall(tool_name="calculator", arguments={"expression": expr})],
+        )
+    return SubTask(
+        description=f"Rechercher une réponse via RAG: {question[:80]}",
+        tool_calls=[ToolCall(tool_name="rag_fiscal", arguments={"question": question})],
+    )
 
 
 class OllamaClient:
@@ -95,17 +132,7 @@ class OllamaClient:
         if response_model is ExecutionPlan:
             return response_model(  # type: ignore[return-value]
                 task_id=task_id,
-                subtasks=[
-                    SubTask(
-                        description=f"Rechercher une réponse via RAG: {question[:80]}",
-                        tool_calls=[
-                            ToolCall(
-                                tool_name="rag_fiscal",
-                                arguments={"question": question},
-                            )
-                        ],
-                    )
-                ],
+                subtasks=[_route_subtask(question)],
                 reasoning=f"{_FALLBACK_MARKER} Plan déterministe (Ollama indisponible)",
             )
 

@@ -8,7 +8,15 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from agent.schemas import ApprovalRequest, RunRecord, TaskRequest, TraceSpan
+from agent.schemas import (
+    AgentResult,
+    ApprovalRequest,
+    ExecutionPlan,
+    ReviewResult,
+    RunRecord,
+    TaskRequest,
+    TraceSpan,
+)
 
 
 class TraceStore:
@@ -26,6 +34,9 @@ class TraceStore:
                 task_json   TEXT NOT NULL,
                 status      TEXT NOT NULL DEFAULT 'pending',
                 approval_json TEXT,
+                plan_json   TEXT,
+                result_json TEXT,
+                review_json TEXT,
                 created_at  TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS spans (
@@ -40,6 +51,11 @@ class TraceStore:
                 FOREIGN KEY (run_id) REFERENCES runs(id)
             );
         """)
+        # Migrate older DBs that predate the plan/result/review columns.
+        existing = {r["name"] for r in self._conn.execute("PRAGMA table_info(runs)")}
+        for col in ("plan_json", "result_json", "review_json"):
+            if col not in existing:
+                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} TEXT")
         self._conn.commit()
 
     # ── Runs ──────────────────────────────────────────────────────────────────
@@ -81,6 +97,24 @@ class TraceStore:
         )
         self._conn.commit()
         return True
+
+    def save_plan(self, run_id: str, plan: ExecutionPlan) -> None:
+        self._conn.execute(
+            "UPDATE runs SET plan_json=? WHERE id=?", (plan.model_dump_json(), run_id)
+        )
+        self._conn.commit()
+
+    def save_result(self, run_id: str, result: AgentResult) -> None:
+        self._conn.execute(
+            "UPDATE runs SET result_json=? WHERE id=?", (result.model_dump_json(), run_id)
+        )
+        self._conn.commit()
+
+    def save_review(self, run_id: str, review: ReviewResult) -> None:
+        self._conn.execute(
+            "UPDATE runs SET review_json=? WHERE id=?", (review.model_dump_json(), run_id)
+        )
+        self._conn.commit()
 
     def set_run_status(self, run_id: str, status: str) -> None:
         """Generic status update; alias for finish_run with any status."""
@@ -188,10 +222,29 @@ class TraceStore:
             if row["approval_json"]
             else None
         )
+        keys = row.keys()
+        plan = (
+            ExecutionPlan.model_validate_json(row["plan_json"])
+            if "plan_json" in keys and row["plan_json"]
+            else None
+        )
+        result = (
+            AgentResult.model_validate_json(row["result_json"])
+            if "result_json" in keys and row["result_json"]
+            else None
+        )
+        review = (
+            ReviewResult.model_validate_json(row["review_json"])
+            if "review_json" in keys and row["review_json"]
+            else None
+        )
         spans = self.get_spans(run_id)
         return RunRecord(
             id=run_id,
             task=task,
+            plan=plan,
+            result=result,
+            review=review,
             approval=approval,
             spans=spans,
             status=row["status"],

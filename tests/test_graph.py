@@ -154,6 +154,17 @@ def test_full_run_with_fallback_llm(trace, default_registry, task):
     assert final["approval_needed"] is False
 
 
+def test_full_run_persists_result_and_plan(trace, default_registry, task):
+    """After a run, export_run must expose the structured plan + result (not just spans)."""
+    final = run_task(task=task, llm=OllamaClient(force_fallback=True), registry=default_registry, trace=trace)
+    record = trace.export_run(final["run_id"])
+    assert record is not None
+    assert record.plan is not None
+    assert record.result is not None
+    assert record.review is not None
+    assert record.review.verdict == "approved"
+
+
 def test_full_run_trace_has_all_nodes(trace, default_registry, task):
     final = run_task(task=task, llm=OllamaClient(force_fallback=True), registry=default_registry, trace=trace)
     node_names = {s.name for s in trace.get_spans(final["run_id"])}

@@ -10,6 +10,7 @@ from agent.schemas import RiskLevel, ToolCall
 from agent.tools.builtins import (
     _safe_eval,
     calculator,
+    delete_file,
     list_files,
     read_file,
     search_text,
@@ -41,6 +42,7 @@ def test_default_registry_risk_levels(default_registry):
     assert default_registry.get_risk("search_text") == RiskLevel.LOW
     assert default_registry.get_risk("calculator") == RiskLevel.LOW
     assert default_registry.get_risk("rag_fiscal") == RiskLevel.MEDIUM
+    assert default_registry.get_risk("delete_file") == RiskLevel.HIGH
 
 
 def test_unknown_tool_has_no_risk():
@@ -57,7 +59,9 @@ def test_has_tool():
 
 def test_list_tools_returns_all(default_registry):
     names = {t["name"] for t in default_registry.list_tools()}
-    assert names == {"list_files", "read_file", "search_text", "calculator", "rag_fiscal"}
+    assert names == {
+        "list_files", "read_file", "search_text", "calculator", "rag_fiscal", "delete_file",
+    }
 
 
 # ── Tool call logging (inputs / outputs / latency) ────────────────────────────
@@ -160,3 +164,16 @@ def test_search_text_not_found():
         Path(tmp, "f.txt").write_text("rien ici")
         result = search_text("zzz_missing", tmp)
         assert "No matches" in result
+
+
+# ── HIGH-risk demo tool (sandboxed) ───────────────────────────────────────────
+
+def test_delete_file_is_sandboxed():
+    """delete_file must never touch the disk — even a real path is left intact."""
+    with tempfile.NamedTemporaryFile(suffix=".txt", mode="w", delete=False) as f:
+        f.write("keep me")
+        name = f.name
+    result = delete_file(name)
+    assert "simulée" in result.lower()
+    assert Path(name).exists(), "delete_file must NOT actually remove the file"
+    assert read_file(name) == "keep me"

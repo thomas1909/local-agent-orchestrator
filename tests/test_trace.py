@@ -138,6 +138,39 @@ def test_approve_unknown_run_returns_false(trace):
     assert trace.approve_run("does-not-exist") is False
 
 
+def test_export_run_persists_plan_result_review(trace):
+    from agent.schemas import (
+        AgentResult,
+        ExecutionPlan,
+        ReviewResult,
+        SubTask,
+        ToolCall,
+    )
+
+    task = TaskRequest(question="Combien font 6*7 ?")
+    run_id = trace.new_run(task)
+
+    plan = ExecutionPlan(
+        task_id=task.id,
+        subtasks=[SubTask(
+            description="Calculer",
+            tool_calls=[ToolCall(tool_name="calculator", arguments={"expression": "6*7"})],
+        )],
+    )
+    trace.save_plan(run_id, plan)
+    trace.save_result(run_id, AgentResult(task_id=task.id, answer="42"))
+    trace.save_review(run_id, ReviewResult(task_id=task.id, verdict="approved"))
+
+    record = trace.export_run(run_id)
+    assert record is not None
+    assert record.plan is not None
+    assert record.plan.subtasks[0].tool_calls[0].tool_name == "calculator"
+    assert record.result is not None
+    assert record.result.answer == "42"
+    assert record.review is not None
+    assert record.review.verdict == "approved"
+
+
 def test_span_context_manager(trace):
     task = TaskRequest(question="q")
     run_id = trace.new_run(task)

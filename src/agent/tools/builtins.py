@@ -102,6 +102,15 @@ def calculator(expression: str) -> str:
         return f"Erreur de calcul: {exc}"
 
 
+def delete_file(path: str) -> str:
+    """DÉMO à risque ÉLEVÉ — bac à sable : n'effectue AUCUNE action réelle sur le disque.
+
+    Présent uniquement pour démontrer le garde-fou human-in-the-loop : un outil HIGH
+    est bloqué par le graphe tant qu'une approbation humaine n'est pas accordée.
+    """
+    return f"Suppression simulée (bac à sable, aucune action réelle effectuée) : {path}"
+
+
 def rag_fiscal(question: str, rag_api_url: str = "http://127.0.0.1:8000") -> str:
     """Query the local RAG fiscal API. Returns a graceful message if offline."""
     try:
@@ -166,6 +175,12 @@ def build_default_registry(rag_api_url: str = "http://127.0.0.1:8000") -> ToolRe
         "Interroge la base documentaire fiscale locale (POST /query).",
         _rag,
         RiskLevel.MEDIUM,
+    )
+    registry.register_tool(
+        "delete_file",
+        "Supprime un fichier (DÉMO à risque ÉLEVÉ — bac à sable, aucune action réelle).",
+        delete_file,
+        RiskLevel.HIGH,
     )
 
     return registry

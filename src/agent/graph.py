@@ -79,6 +79,7 @@ def _plan(state: GraphState, *, llm: OllamaClient, trace: TraceStore) -> GraphSt
         response_model=ExecutionPlan,
         task=task,
     )
+    trace.save_plan(run_id, plan)
     trace.end_span(span_id, data={"subtasks": len(plan.subtasks)})
     return {"plan": plan}
 
@@ -143,6 +144,7 @@ def _write(state: GraphState, *, llm: OllamaClient, trace: TraceStore) -> GraphS
             task_id=task.id,
             answer="Approbation humaine requise avant d'exécuter des outils à risque élevé.",
         )
+        trace.save_result(run_id, result)
         trace.end_span(span_id, data={"answer_len": len(result.answer)})
         return {"result": result}
 
@@ -173,6 +175,7 @@ def _write(state: GraphState, *, llm: OllamaClient, trace: TraceStore) -> GraphS
                 tool_results=tool_results,
             )
 
+    trace.save_result(run_id, result)
     trace.end_span(span_id, data={"answer_len": len(result.answer)})
     return {"result": result}
 
@@ -203,6 +206,7 @@ def _review(state: GraphState, *, registry: ToolRegistry, trace: TraceStore) -> 
             verdict="approval_required",
             notes=f"Approbation requise pour: {', '.join(high_risk)}",
         )
+        trace.save_review(run_id, review)
         trace.save_approval(approval)
         trace.end_span(span_id, data={"verdict": "approval_required", "tools": high_risk})
         return {"review": review, "approval": approval}
@@ -212,6 +216,7 @@ def _review(state: GraphState, *, registry: ToolRegistry, trace: TraceStore) -> 
         verdict="approved",
         notes="Réponse vérifiée automatiquement.",
     )
+    trace.save_review(run_id, review)
     trace.finish_run(run_id, "completed")
     trace.end_span(span_id, data={"verdict": "approved"})
     return {"review": review}
