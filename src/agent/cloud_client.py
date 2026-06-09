@@ -103,11 +103,13 @@ def _route_subtask(question: str) -> SubTask:
         content = content_m.group(1) if content_m else ""
         return SubTask(
             description=f"Écriture de fichier: {path}",
+            assigned_role="coder",
             tool_calls=[ToolCall(tool_name="edit_file", arguments={"path": path, "content": content})],
         )
     if any(k in q for k in _BASH_KEYWORDS):
         return SubTask(
             description=f"Exécution de commande shell: {question[:80]}",
+            assigned_role="coder",
             tool_calls=[ToolCall(tool_name="execute_bash", arguments={"command": question, "timeout": 30})],
         )
     if any(k in q for k in _DELETE_KEYWORDS):
@@ -115,6 +117,7 @@ def _route_subtask(question: str) -> SubTask:
         path = m.group(0) if m else "rapport.txt"
         return SubTask(
             description=f"Action à risque élevé demandée: {question[:80]}",
+            assigned_role="coder",
             tool_calls=[ToolCall(tool_name="delete_file", arguments={"path": path})],
         )
     m = _MATH_RE.search(question)
@@ -125,10 +128,12 @@ def _route_subtask(question: str) -> SubTask:
         expr = re.sub(r"\s+", "", expr)
         return SubTask(
             description=f"Calculer: {expr}",
+            assigned_role="coder",
             tool_calls=[ToolCall(tool_name="calculator", arguments={"expression": expr})],
         )
     return SubTask(
         description=f"Rechercher une réponse via RAG: {question[:80]}",
+        assigned_role="researcher",
         tool_calls=[ToolCall(tool_name="rag_fiscal", arguments={"question": question})],
     )
 

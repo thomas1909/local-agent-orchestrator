@@ -23,6 +23,13 @@ class RiskLevel(StrEnum):
     HIGH = "HIGH"
 
 
+class AgentRole(StrEnum):
+    SUPERVISOR = "supervisor"
+    CODER = "coder"
+    RESEARCHER = "researcher"
+    REVIEWER = "reviewer"
+
+
 # ── 1. TaskRequest ────────────────────────────────────────────────────────────
 class TaskRequest(BaseModel):
     id: str = Field(default_factory=_uid)
@@ -41,6 +48,7 @@ class SubTask(BaseModel):
     id: str = Field(default_factory=_uid)
     description: str
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    assigned_role: str = "researcher"
 
 
 # ── 4. ExecutionPlan ──────────────────────────────────────────────────────────
@@ -57,6 +65,8 @@ class ToolResult(BaseModel):
     output: str
     error: str | None = None
     latency_ms: int = 0
+    agent_role: str = ""
+    model: str = ""
 
 
 # ── 6. AgentResult ────────────────────────────────────────────────────────────

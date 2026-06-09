@@ -40,6 +40,7 @@ class GraphState(TypedDict, total=False):
     approved: bool          # set to True when human approved a HIGH-risk run
     run_id: str
     _root_span: str
+    iteration: int          # revision loop counter (max 2)
 
 
 def _initial_state(task: TaskRequest, approved: bool = False) -> GraphState:
@@ -54,6 +55,7 @@ def _initial_state(task: TaskRequest, approved: bool = False) -> GraphState:
         "approved": approved,
         "run_id": str(uuid.uuid4()),
         "_root_span": "",
+        "iteration": 0,
     }
 
 
@@ -97,16 +99,30 @@ def _plan(
     return {"plan": plan}
 
 
-def _research(state: GraphState, *, registry: ToolRegistry, trace: TraceStore) -> GraphState:
+def _execute_subtasks(
+    state: GraphState,
+    *,
+    clients: dict[str, CloudClient],
+    registry: ToolRegistry,
+    trace: TraceStore,
+) -> GraphState:
+    """Execute tool_calls for each SubTask, then synthesize via assigned_role LLM."""
     run_id = state["run_id"]
     plan: ExecutionPlan | None = state.get("plan")
+    task: TaskRequest = state["task"]
+    iteration = state.get("iteration", 0)
+
+    span_id = trace.start_span(run_id, "execute_subtasks", data={"iteration": iteration})
+
     if plan is None:
-        return {"tool_results": [], "approval_needed": False}
+        trace.end_span(span_id)
+        return {"tool_results": [], "result": None, "approval_needed": False}
 
     tool_results: list[ToolResult] = []
     approval_needed = False
 
     for subtask in plan.subtasks:
+        role = subtask.assigned_role
         for call in subtask.tool_calls:
             if not registry.has_tool(call.tool_name):
                 tool_results.append(
@@ -115,19 +131,20 @@ def _research(state: GraphState, *, registry: ToolRegistry, trace: TraceStore) -
                         arguments=call.arguments,
                         output="",
                         error=f"Tool not registered: {call.tool_name!r}",
+                        agent_role=role,
+                        model=clients.get(role, clients["researcher"]).model if role in clients else "",
                     )
                 )
                 continue
 
             if registry.get_risk(call.tool_name) == RiskLevel.HIGH and not state.get("approved"):
-                # Block HIGH risk tools unless the run was explicitly approved
                 approval_needed = True
                 continue
 
             span_id = trace.start_span(
                 run_id,
                 f"tool:{call.tool_name}",
-                data={"tool": call.tool_name, "args": call.arguments},
+                data={"tool": call.tool_name, "args": call.arguments, "agent_role": role},
             )
             result = registry.execute(call)
             trace.end_span(
@@ -138,55 +155,61 @@ def _research(state: GraphState, *, registry: ToolRegistry, trace: TraceStore) -
                     "output_preview": result.output[:120],
                     "latency_ms": result.latency_ms,
                     "error": result.error,
+                    "agent_role": role,
                 },
             )
+            # Enrich result with role/model for trace
+            result.agent_role = role
+            result.model = clients.get(role, clients["researcher"]).model if role in clients else ""
             tool_results.append(result)
 
-    return {"tool_results": tool_results, "approval_needed": approval_needed}
-
-
-def _write(
-    state: GraphState,
-    *,
-    clients: dict[str, CloudClient],
-    trace: TraceStore,
-) -> GraphState:
-    run_id = state["run_id"]
-    task: TaskRequest = state["task"]
-    tool_results: list[ToolResult] = state.get("tool_results", [])
-
-    span_id = trace.start_span(run_id, "write", data={"approval_needed": state.get("approval_needed")})
-
-    if state.get("approval_needed"):
+    if approval_needed:
         result = AgentResult(
             task_id=task.id,
             answer="Approbation humaine requise avant d'exécuter des outils à risque élevé.",
         )
         trace.save_result(run_id, result)
-        trace.end_span(span_id, data={"answer_len": len(result.answer)})
-        return {"result": result}
+        trace.end_span(span_id)
+        return {"tool_results": tool_results, "result": result, "approval_needed": True}
 
-    llm = clients["researcher"]
-
-    if tool_results:
-        context = "\n\n".join(
-            f"[{r.tool_name}]: {r.output}" for r in tool_results if not r.error
+    # Synthesize: for each subtask without tool_calls, call assigned_role client
+    answers: list[str] = []
+    for subtask in plan.subtasks:
+        if subtask.tool_calls:
+            continue
+        role = subtask.assigned_role
+        llm = clients.get(role, clients["researcher"])
+        span_id = trace.start_span(
+            run_id,
+            f"synthesize:{role}",
+            data={"subtask_id": subtask.id, "agent_role": role, "model": llm.model},
         )
-        messages = [
-            {"role": "system", "content": "Tu es un assistant. Synthétise la réponse en français."},
-            {"role": "user", "content": f"Question: {task.question}\n\nSources:\n{context}"},
-        ]
+        synthesis = llm.predict(
+            messages=[
+                {"role": "system", "content": "Tu es un assistant. Réponds en français."},
+                {"role": "user", "content": f"Question: {task.question}\n\nSous-tâche: {subtask.description}"},
+            ],
+            response_model=AgentResult,
+            task=task,
+        )
+        trace.end_span(span_id, data={"answer_len": len(synthesis.answer), "agent_role": role, "model": llm.model})
+        answers.append(synthesis.answer)
+
+    if answers:
+        final_answer = "\n\n".join(answers)
+    elif tool_results:
+        final_answer = next((r.output for r in tool_results if not r.error), "")
     else:
-        messages = [
-            {"role": "system", "content": "Tu es un assistant. Réponds en français."},
-            {"role": "user", "content": task.question},
-        ]
+        final_answer = ""
 
-    result = llm.predict(messages=messages, response_model=AgentResult, task=task)
+    result = AgentResult(
+        task_id=task.id,
+        answer=final_answer,
+        sources=list({r.tool_name for r in tool_results}),
+        tool_results=tool_results,
+    )
 
-    # When in fallback mode but tool results are available, use them directly
     from agent.cloud_client import _FALLBACK_MARKER
-
     if result.answer.startswith(_FALLBACK_MARKER) and tool_results:
         best = next((r for r in tool_results if not r.error), None)
         if best:
@@ -198,8 +221,8 @@ def _write(
             )
 
     trace.save_result(run_id, result)
-    trace.end_span(span_id, data={"answer_len": len(result.answer)})
-    return {"result": result}
+    trace.end_span(span_id)
+    return {"tool_results": tool_results, "result": result, "approval_needed": False}
 
 
 def _review(
@@ -212,6 +235,7 @@ def _review(
     run_id = state["run_id"]
     task: TaskRequest = state["task"]
     plan: ExecutionPlan | None = state.get("plan")
+    iteration = state.get("iteration", 0)
 
     span_id = trace.start_span(run_id, "review")
 
@@ -249,9 +273,25 @@ def _review(
         task=task,
     )
     trace.save_review(run_id, review)
+
+    # Revision loop: increment counter if needs_revision, stop at max 2 iterations
+    if review.verdict == "needs_revision" and iteration < 2:
+        trace.end_span(span_id, data={"verdict": review.verdict, "iteration": iteration + 1})
+        return {"review": review, "iteration": iteration + 1}
+
     trace.finish_run(run_id, "completed")
     trace.end_span(span_id, data={"verdict": review.verdict})
     return {"review": review}
+
+
+# ── Conditional routing ─────────────────────────────────────────────────────
+
+def _review_router(state: GraphState) -> str:
+    review = state.get("review")
+    iteration = state.get("iteration", 0)
+    if review and review.verdict == "needs_revision" and iteration < 2:
+        return "execute_subtasks"
+    return END
 
 
 # ── Graph builder ─────────────────────────────────────────────────────────────
@@ -266,16 +306,14 @@ def build_graph(
 
     builder.add_node("intake", lambda s: _intake(s, trace=trace))
     builder.add_node("plan", lambda s: _plan(s, clients=clients, trace=trace))
-    builder.add_node("research", lambda s: _research(s, registry=registry, trace=trace))
-    builder.add_node("write", lambda s: _write(s, clients=clients, trace=trace))
+    builder.add_node("execute_subtasks", lambda s: _execute_subtasks(s, clients=clients, registry=registry, trace=trace))
     builder.add_node("review", lambda s: _review(s, clients=clients, registry=registry, trace=trace))
 
     builder.set_entry_point("intake")
     builder.add_edge("intake", "plan")
-    builder.add_edge("plan", "research")
-    builder.add_edge("research", "write")
-    builder.add_edge("write", "review")
-    builder.add_edge("review", END)
+    builder.add_edge("plan", "execute_subtasks")
+    builder.add_edge("execute_subtasks", "review")
+    builder.add_conditional_edges("review", lambda s: _review_router(s))
 
     return builder.compile()
 

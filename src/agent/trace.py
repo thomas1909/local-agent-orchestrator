@@ -175,10 +175,12 @@ class TraceStore:
 
     def end_span(self, span_id: str, data: dict[str, Any] | None = None) -> None:
         row = self._conn.execute(
-            "SELECT started_at FROM spans WHERE id=?", (span_id,)
+            "SELECT started_at, data_json FROM spans WHERE id=?", (span_id,)
         ).fetchone()
         now = datetime.now(UTC)
         duration_ms: int | None = None
+        merged: dict[str, Any] = json.loads(row["data_json"]) if row else {}
+        merged.update(data or {})
         if row:
             started = datetime.fromisoformat(row["started_at"])
             if started.tzinfo is None:
@@ -186,7 +188,7 @@ class TraceStore:
             duration_ms = int((now - started).total_seconds() * 1000)
         self._conn.execute(
             "UPDATE spans SET ended_at=?, duration_ms=?, data_json=? WHERE id=?",
-            (now.isoformat(), duration_ms, json.dumps(data or {}), span_id),
+            (now.isoformat(), duration_ms, json.dumps(merged), span_id),
         )
         self._conn.commit()
 
