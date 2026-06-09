@@ -1,4 +1,4 @@
-"""OllamaClient with instructor structured outputs + deterministic offline fallback."""
+"""OllamaClient with instructor structured outputs (OpenAI SDK) + deterministic offline fallback."""
 from __future__ import annotations
 
 import re
@@ -16,19 +16,41 @@ _FALLBACK_MARKER = "[Mode hors-ligne]"
 
 # Two numbers joined by at least one arithmetic operator (× / x / ÷ accepted).
 _MATH_RE = re.compile(r"-?\d+(?:[.,]\d+)?(?:\s*[-+*/×x÷]\s*-?\d+(?:[.,]\d+)?)+")
-_ACTION_KEYWORDS = (
+_BASH_KEYWORDS = (
+    "ls", "cat", "grep", "find", "pwd", "echo", "curl", "wget",
+    "bash", "shell", "commande", "exécute", "exécuter", "terminal",
+    "run command", "execute command",
+)
+_DELETE_KEYWORDS = (
     "supprime", "supprimer", "efface", "effacer", "delete", "remove",
-    "exécute l'action", "execute action",
+)
+_EDIT_KEYWORDS = (
+    "crée", "créer", "écrit", "écrire", "écris", "enregistre", "enregistrer",
+    "sauve", "sauver", "sauvegarder", "write", "create file", "save",
 )
 
 
 def _route_subtask(question: str) -> SubTask:
     """Deterministic keyword routing for the offline planner.
 
-    math expression → calculator · destructive verb → delete_file (HIGH) · else → rag_fiscal.
+    edit → edit_file (LOW) · bash → execute_bash (HIGH) · delete → delete_file (HIGH) · math → calculator · else → rag_fiscal.
     """
     q = question.lower()
-    if any(k in q for k in _ACTION_KEYWORDS):
+    if any(k in q for k in _EDIT_KEYWORDS):
+        path_m = re.search(r"[\w./\\-]+\.\w+", question)
+        path = path_m.group(0) if path_m else "output.txt"
+        content_m = re.search(r"""['"\u00ab](.+?)['"\u00bb]""", question)
+        content = content_m.group(1) if content_m else ""
+        return SubTask(
+            description=f"Écriture de fichier: {path}",
+            tool_calls=[ToolCall(tool_name="edit_file", arguments={"path": path, "content": content})],
+        )
+    if any(k in q for k in _BASH_KEYWORDS):
+        return SubTask(
+            description=f"Exécution de commande shell: {question[:80]}",
+            tool_calls=[ToolCall(tool_name="execute_bash", arguments={"command": question, "timeout": 30})],
+        )
+    if any(k in q for k in _DELETE_KEYWORDS):
         m = re.search(r"[\w./\\-]+\.\w+", question)
         path = m.group(0) if m else "rapport.txt"
         return SubTask(
@@ -52,7 +74,10 @@ def _route_subtask(question: str) -> SubTask:
 
 
 class OllamaClient:
-    """Thin wrapper around instructor+ollama with a deterministic fallback.
+    """Thin wrapper around instructor+OpenAI SDK pointing at Ollama's v1 API.
+
+    Uses the OpenAI-compatible endpoint (http://localhost:11434/v1) which is
+    natively supported by Ollama and works reliably with instructor.
 
     Set force_fallback=True (or FORCE_FALLBACK=true in .env) to bypass Ollama
     entirely — used in tests and offline development.
@@ -64,7 +89,8 @@ class OllamaClient:
         model: str = "qwen3:1.7b-q4_K_M",
         force_fallback: bool = False,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        # Strip trailing slash and append /v1 for the OpenAI-compatible endpoint
+        self._base_url = base_url.rstrip("/") + "/v1"
         self._model = model
         self._force_fallback = force_fallback
         self._instructor_client = None
@@ -92,17 +118,18 @@ class OllamaClient:
     def is_fallback_mode(self) -> bool:
         return self._force_fallback or not self._is_available()
 
-    # ── Instructor call ───────────────────────────────────────────────────────
+    # ── Instructor call (OpenAI SDK) ────────────────────────────────────────────
 
     def _get_client(self):
         if self._instructor_client is None:
             import instructor
-            from ollama import Client as OllamaBaseClient
+            from openai import OpenAI
 
-            raw = OllamaBaseClient(host=self._base_url)
-            self._instructor_client = instructor.from_ollama(
-                raw, mode=instructor.Mode.JSON
+            raw = OpenAI(
+                base_url=self._base_url,
+                api_key="ollama",
             )
+            self._instructor_client = instructor.from_openai(raw)
         return self._instructor_client
 
     def _instructor_predict(self, messages: list[dict[str, str]], response_model: type[T]) -> T:
@@ -117,8 +144,11 @@ class OllamaClient:
     # ── Availability check ────────────────────────────────────────────────────
 
     def _is_available(self) -> bool:
+        """Check if Ollama is reachable by hitting the /api/tags endpoint."""
         try:
-            r = httpx.get(f"{self._base_url}/api/tags", timeout=2.0)
+            # Remove /v1 suffix to reach the native Ollama endpoint
+            check_url = self._base_url.rsplit("/v1", 1)[0] + "/api/tags"
+            r = httpx.get(check_url, timeout=2.0)
             return r.status_code == 200
         except Exception:
             return False

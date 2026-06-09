@@ -134,6 +134,96 @@ uv run --no-sync ruff check .     # clean
 | API | FastAPI — `/run`, `/runs`, `/runs/{id}`, `/approve`, `/health`, SSE `/stream`, MCP |
 | UI | Next.js 15 (App Router) · TypeScript · Tailwind v4 · shadcn/ui · next-themes |
 
+## Architecture HITL
+
+The Human-in-the-Loop gate is a first-class node in the LangGraph pipeline, not
+an afterthought bolted onto a tool. Every tool in the `ToolRegistry` carries a
+`risk_level` (`LOW` / `MEDIUM` / `HIGH`), and **HIGH-risk tools are never
+executed without an explicit human decision**. The two flagged tools out of the
+box are `execute_bash` (arbitrary shell) and `delete_file` (destructive).
+
+The flow is:
+
+1. The **research** node dispatches a tool call. The reviewer (next node) checks
+   the `risk_level` against the pending tool. If it is HIGH, the graph
+   **short-circuits** before execution: the run transitions to the special
+   `approval_required` status, the current `AgentState` is frozen, and an
+   `ApprovalRequest` (run_id, tool name, args, planned span) is persisted to
+   the SQLite trace store.
+2. The backend surfaces this state over HTTP: `GET /runs/{id}` returns
+   `status: "approval_required"` together with the request payload, and a
+   **Server-Sent Events** stream on `/runs/{id}/stream` holds the run open
+   (heartbeats keep the connection alive, no span is closed).
+3. The Next.js frontend polls `/runs/{id}` and, on seeing
+   `approval_required`, renders the `<ApprovePanel />` component — a side
+   panel showing the tool name, its arguments, the originating task, and the
+   span that would be created. The user clicks **Approve** or **Reject**.
+4. The frontend calls `POST /runs/{id}/approve` with a JSON body
+   `{ "decision": "accept" | "reject", "note": "…" }`. The backend resumes
+   the graph from the frozen state: on `accept` the HIGH-risk tool is
+   dispatched and the rest of the plan runs; on `reject` the run is
+   terminated with `status: "failed"` and a `rejected_by_human` reason.
+
+The key invariant is that **the graph never auto-resumes**: the run stays in
+`approval_required` indefinitely until a human decision arrives, and the
+`ApprovePanel` is the only sanctioned way to deliver that decision. This
+makes HITL reviewable in the trace (an `approval` span with the decision and
+note), auditable via the run history, and replayable in tests without any
+LLM calls (`FORCE_FALLBACK=true` exercises the exact same path).
+
+## Lancement Local
+
+The project is split in two processes: a **FastAPI backend** (port `8100`,
+the agent runtime) and a **Next.js frontend** (port `3000`, the UI). Both
+must be running for the full HITL demo (the CLI in the [Quickstart](#quickstart)
+section above also works headless).
+
+```bash
+# ── Backend (API on http://127.0.0.1:8100) ───────────────────────────────
+cd ~/projets/7-Agent-Local
+uv sync --extra dev
+uv run uvicorn src.agent.api.main:app --host 127.0.0.1 --port 8100
+#   OpenAPI docs : http://127.0.0.1:8100/docs
+#   MCP endpoint : http://127.0.0.1:8100/mcp
+#   Healthcheck  : http://127.0.0.1:8100/health
+
+# ── Frontend (UI on http://localhost:3000) ───────────────────────────────
+cd ~/projets/7-Agent-Local/frontend
+npm install
+npm run dev
+#   UI           : http://localhost:3000
+```
+
+The backend must be started **before** you submit a run from the UI — the
+frontend talks to it over `127.0.0.1:8100` by default (override via
+`NEXT_PUBLIC_API_URL` at build time if you change the port). The very first
+`npm install` from `frontend/` requires internet access so the Tailwind v4
+PostCSS plugin gets pinned in `package-lock.json`; subsequent runs are
+fully offline.
+
+## Configuration
+
+All runtime knobs are read from environment variables (or a `.env` file at
+the repo root, loaded by the backend on startup). None are required — every
+variable has a safe default — but the six below are the ones you'll
+actually touch.
+
+| Variable          | Default                       | Purpose |
+|-------------------|-------------------------------|---------|
+| `OLLAMA_BASE_URL` | `http://localhost:11434`      | Endpoint of the local Ollama server used by `instructor` for structured-output planning and review. Ignored when `FORCE_FALLBACK=true`. |
+| `OLLAMA_MODEL`    | `qwen3:1.7b-q4_K_M`           | Model name passed to Ollama. Any chat model with reliable JSON-mode works; the golden set in [`eval/`](eval/) was scored on `qwen3:1.7b-q4_K_M`. |
+| `FORCE_FALLBACK`  | `false`                       | When `true`, the planner and reviewer skip Ollama entirely and use the deterministic offline planner. The full HITL flow, trace store, and tests still work — use this for CI and for machines with no GPU. |
+| `AGENT_PORT`      | `8100`                        | Port the FastAPI backend binds to. The frontend's `NEXT_PUBLIC_API_URL` should point at it. |
+| `TRACE_DB_PATH`   | `./data/traces.sqlite`        | Path to the SQLite trace store. Each run, span, and `ApprovalRequest` is persisted here; export via the `/runs/{id}/trace` endpoint. |
+| `RAG_API_URL`     | `http://127.0.0.1:8000`       | URL of the companion local RAG service (project `6-RAG`) consumed by the `rag_fiscal` tool. The agent degrades gracefully when it is down — the tool call is recorded as `unavailable` and the run continues. |
+
+A minimal `.env` to run **fully offline** (no Ollama, no RAG service) is
+simply:
+
+```dotenv
+FORCE_FALLBACK=true
+```
+
 ## Screenshots
 
 | | Light | Dark |

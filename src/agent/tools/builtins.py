@@ -111,6 +111,32 @@ def delete_file(path: str) -> str:
     return f"Suppression simulée (bac à sable, aucune action réelle effectuée) : {path}"
 
 
+def edit_file(path: str, content: str) -> str:
+    """Low-risk tool: write content to a file (create or overwrite).
+
+    Confined to the project workspace — refuses paths outside cwd.
+    """
+    p = Path(path).resolve()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        return f"Fichier écrit : {path} ({len(content)} caractères)"
+    except OSError as exc:
+        return f"Impossible d'écrire {path} : {exc}"
+
+
+def execute_bash(command: str, timeout: int = 30) -> str:
+    """DÉMO à risque ÉLEVÉ — bac à sable : n'exécute AUCUNE commande réelle.
+
+    Présent uniquement pour démontrer le garde-fou human-in-the-loop : un outil HIGH
+    est bloqué par le graphe tant qu'une approbation humaine n'est pas accordée.
+    """
+    return (
+        f"Exécution simulée (bac à sable, aucune action réelle effectuée) : "
+        f"{command!r} (timeout={timeout}s)"
+    )
+
+
 def rag_fiscal(question: str, rag_api_url: str = "http://127.0.0.1:8000") -> str:
     """Query the local RAG fiscal API. Returns a graceful message if offline."""
     try:
@@ -175,6 +201,18 @@ def build_default_registry(rag_api_url: str = "http://127.0.0.1:8000") -> ToolRe
         "Interroge la base documentaire fiscale locale (POST /query).",
         _rag,
         RiskLevel.MEDIUM,
+    )
+    registry.register_tool(
+        "edit_file",
+        "Écrit du contenu dans un fichier (crée ou écrase).",
+        edit_file,
+        RiskLevel.LOW,
+    )
+    registry.register_tool(
+        "execute_bash",
+        "Exécute une commande shell (DÉMO à risque ÉLEVÉ — bac à sable, aucune action réelle).",
+        execute_bash,
+        RiskLevel.HIGH,
     )
     registry.register_tool(
         "delete_file",
