@@ -9,7 +9,7 @@ from rich.table import Table
 
 app = typer.Typer(
     name="agent",
-    help="Local agent orchestrator — LangGraph + Ollama + RAG fiscal",
+    help="Cloud-only agent orchestrator — LangGraph + Instructor + ToolRegistry + HITL",
     no_args_is_help=True,
 )
 
@@ -18,9 +18,9 @@ app.add_typer(runs_app, name="runs")
 
 
 def _make_deps(cfg=None):
-    """Build LLM, registry, and trace from config (lazy imports to keep CLI fast)."""
+    """Build cloud clients, registry, and trace from config."""
+    from agent.cloud_client import CloudClient, create_clients_from_config
     from agent.config import get_config
-    from agent.llm import OllamaClient
     from agent.tools.builtins import build_default_registry
     from agent.trace import TraceStore
 
@@ -30,14 +30,16 @@ def _make_deps(cfg=None):
     import os
     os.makedirs("data", exist_ok=True)
 
-    llm = OllamaClient(
-        base_url=cfg.ollama_base_url,
-        model=cfg.ollama_model,
+    clients = create_clients_from_config(
+        models=cfg.models_by_role,
+        base_url=cfg.cloud_base_url,
         force_fallback=cfg.force_fallback,
+        require_cloud=cfg.should_validate_cloud,
+        api_key=cfg.cloud_api_key,
     )
     registry = build_default_registry(rag_api_url=cfg.rag_api_url)
     trace = TraceStore(db_path=cfg.trace_db_path)
-    return llm, registry, trace
+    return clients, registry, trace
 
 
 # ── agent run ─────────────────────────────────────────────────────────────────
@@ -51,16 +53,19 @@ def run(
     from agent.graph import run_task
     from agent.schemas import TaskRequest
 
-    llm, registry, trace = _make_deps()
+    clients, registry, trace = _make_deps()
     task = TaskRequest(question=question)
+
+    supervisor = clients["supervisor"]
 
     if not json_output:
         rprint(f"[bold cyan]▶ Task:[/bold cyan] {question}")
         rprint(f"[dim]run_id preview: {task.id[:8]}…[/dim]")
-        if llm.is_fallback_mode():
-            rprint("[yellow]⚠  Ollama indisponible — mode fallback déterministe[/yellow]")
+        rprint(f"[dim]models: {', '.join(f'{r}:{m}' for r, m in {c.role: c.model for c in clients.values()}.items())}[/dim]")
+        if supervisor.is_fallback_mode():
+            rprint("[yellow]⚠  Mode fallback déterministe (tests uniquement)[/yellow]")
 
-    final = run_task(task=task, llm=llm, registry=registry, trace=trace)
+    final = run_task(task=task, clients=clients, registry=registry, trace=trace)
 
     result = final.get("result")
     review = final.get("review")

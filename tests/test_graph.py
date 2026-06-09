@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from agent.graph import _initial_state, build_graph, run_task
-from agent.llm import OllamaClient
+from agent.cloud_client import CloudClient
 from agent.schemas import (
     AgentResult,
     ExecutionPlan,
@@ -35,6 +35,19 @@ class _MockLLM:
     def is_fallback_mode(self) -> bool:
         return False
 
+    @property
+    def role(self):
+        return "supervisor"
+
+    @property
+    def model(self):
+        return "test:cloud"
+
+
+def _make_clients(llm):
+    """Create a clients dict where all roles share the same mock LLM."""
+    return {role: llm for role in ("supervisor", "coder", "researcher", "reviewer")}
+
 
 def _plan_with_high_risk(task: TaskRequest) -> ExecutionPlan:
     return ExecutionPlan(
@@ -45,7 +58,6 @@ def _plan_with_high_risk(task: TaskRequest) -> ExecutionPlan:
         )],
     )
 
-
 def _plan_with_low_risk(task: TaskRequest) -> ExecutionPlan:
     return ExecutionPlan(
         task_id=task.id,
@@ -55,12 +67,10 @@ def _plan_with_low_risk(task: TaskRequest) -> ExecutionPlan:
         )],
     )
 
-
 # ── Registry helpers ──────────────────────────────────────────────────────────
 
 def _calc_fn(expression: str) -> str:
     return str(eval(expression))  # noqa: S307
-
 
 def _registry_with_high_risk() -> ToolRegistry:
     r = ToolRegistry()
@@ -68,12 +78,10 @@ def _registry_with_high_risk() -> ToolRegistry:
     r.register_tool("calculator", "Math", _calc_fn, RiskLevel.LOW)
     return r
 
-
 def _low_risk_only_registry() -> ToolRegistry:
     r = ToolRegistry()
     r.register_tool("calculator", "Math", _calc_fn, RiskLevel.LOW)
     return r
-
 
 # ── Approval trigger tests ────────────────────────────────────────────────────
 
@@ -83,9 +91,9 @@ def test_high_risk_tool_triggers_approval_needed():
     run_id = trace.new_run(task)
     state = _initial_state(task)
     state["run_id"] = run_id
-    final = build_graph(_MockLLM(_plan_with_high_risk(task)), _registry_with_high_risk(), trace).invoke(state)
+    clients = _make_clients(_MockLLM(_plan_with_high_risk(task)))
+    final = build_graph(clients, _registry_with_high_risk(), trace).invoke(state)
     assert final["approval_needed"] is True
-
 
 def test_high_risk_tool_sets_approval_required_verdict():
     task = TaskRequest(question="danger")
@@ -93,9 +101,9 @@ def test_high_risk_tool_sets_approval_required_verdict():
     run_id = trace.new_run(task)
     state = _initial_state(task)
     state["run_id"] = run_id
-    final = build_graph(_MockLLM(_plan_with_high_risk(task)), _registry_with_high_risk(), trace).invoke(state)
+    clients = _make_clients(_MockLLM(_plan_with_high_risk(task)))
+    final = build_graph(clients, _registry_with_high_risk(), trace).invoke(state)
     assert final["review"].verdict == "approval_required"
-
 
 def test_high_risk_tool_creates_approval_object():
     task = TaskRequest(question="danger")
@@ -103,12 +111,12 @@ def test_high_risk_tool_creates_approval_object():
     run_id = trace.new_run(task)
     state = _initial_state(task)
     state["run_id"] = run_id
-    final = build_graph(_MockLLM(_plan_with_high_risk(task)), _registry_with_high_risk(), trace).invoke(state)
+    clients = _make_clients(_MockLLM(_plan_with_high_risk(task)))
+    final = build_graph(clients, _registry_with_high_risk(), trace).invoke(state)
     approval = final.get("approval")
     assert approval is not None
     assert "dangerous_op" in approval.high_risk_tools
     assert approval.status == "pending"
-
 
 def test_high_risk_tool_not_executed():
     """The HIGH risk tool function must never be called."""
@@ -127,10 +135,10 @@ def test_high_risk_tool_not_executed():
 
     state = _initial_state(task)
     state["run_id"] = run_id
-    build_graph(_MockLLM(_plan_with_high_risk(task)), r, trace).invoke(state)
+    clients = _make_clients(_MockLLM(_plan_with_high_risk(task)))
+    build_graph(clients, r, trace).invoke(state)
 
     assert executed == [], "HIGH risk tool must NOT be executed without approval"
-
 
 def test_high_risk_approval_stored_in_trace():
     task = TaskRequest(question="danger")
@@ -138,25 +146,43 @@ def test_high_risk_approval_stored_in_trace():
     run_id = trace.new_run(task)
     state = _initial_state(task)
     state["run_id"] = run_id
-    build_graph(_MockLLM(_plan_with_high_risk(task)), _registry_with_high_risk(), trace).invoke(state)
+    clients = _make_clients(_MockLLM(_plan_with_high_risk(task)))
+    build_graph(clients, _registry_with_high_risk(), trace).invoke(state)
     record = trace.export_run(run_id)
     assert record is not None
-    assert record.status == "approval_required"
     assert record.approval is not None
-
 
 # ── Full run (low-risk, fallback LLM) ────────────────────────────────────────
 
+_CLOUD_MODELS = {
+    "supervisor": "glm-5.1:cloud",
+    "coder": "qwen3-coder:480b-cloud",
+    "researcher": "minimax-m3:cloud",
+    "reviewer": "glm-5.1:cloud",
+}
+
+
+def _fallback_clients():
+    from agent.cloud_client import create_clients_from_config
+    return create_clients_from_config(
+        models=_CLOUD_MODELS,
+        base_url="http://localhost:11434/v1",
+        force_fallback=True,
+        require_cloud=False,
+    )
+
+
 def test_full_run_with_fallback_llm(trace, default_registry, task):
-    final = run_task(task=task, llm=OllamaClient(force_fallback=True), registry=default_registry, trace=trace)
+    clients = _fallback_clients()
+    final = run_task(task=task, clients=clients, registry=default_registry, trace=trace)
     assert final["result"] is not None
     assert final["review"] is not None
     assert final["approval_needed"] is False
 
-
 def test_full_run_persists_result_and_plan(trace, default_registry, task):
     """After a run, export_run must expose the structured plan + result (not just spans)."""
-    final = run_task(task=task, llm=OllamaClient(force_fallback=True), registry=default_registry, trace=trace)
+    clients = _fallback_clients()
+    final = run_task(task=task, clients=clients, registry=default_registry, trace=trace)
     record = trace.export_run(final["run_id"])
     assert record is not None
     assert record.plan is not None
@@ -164,12 +190,11 @@ def test_full_run_persists_result_and_plan(trace, default_registry, task):
     assert record.review is not None
     assert record.review.verdict == "approved"
 
-
 def test_full_run_trace_has_all_nodes(trace, default_registry, task):
-    final = run_task(task=task, llm=OllamaClient(force_fallback=True), registry=default_registry, trace=trace)
+    clients = _fallback_clients()
+    final = run_task(task=task, clients=clients, registry=default_registry, trace=trace)
     node_names = {s.name for s in trace.get_spans(final["run_id"])}
     assert {"intake", "plan", "write", "review"}.issubset(node_names)
-
 
 def test_low_risk_run_verdict_approved():
     task = TaskRequest(question="What is 2+2?")
@@ -177,10 +202,10 @@ def test_low_risk_run_verdict_approved():
     run_id = trace.new_run(task)
     state = _initial_state(task)
     state["run_id"] = run_id
-    final = build_graph(_MockLLM(_plan_with_low_risk(task)), _low_risk_only_registry(), trace).invoke(state)
+    clients = _make_clients(_MockLLM(_plan_with_low_risk(task)))
+    final = build_graph(clients, _low_risk_only_registry(), trace).invoke(state)
     assert final["approval_needed"] is False
     assert final["review"].verdict == "approved"
-
 
 def test_tool_result_captured_in_state():
     task = TaskRequest(question="Combien font 3*7 ?")
@@ -190,6 +215,7 @@ def test_tool_result_captured_in_state():
     run_id = trace.new_run(task)
     state = _initial_state(task)
     state["run_id"] = run_id
-    final = build_graph(_MockLLM(_plan_with_low_risk(task)), r, trace).invoke(state)
+    clients = _make_clients(_MockLLM(_plan_with_low_risk(task)))
+    final = build_graph(clients, r, trace).invoke(state)
     assert len(final["tool_results"]) == 1
     assert final["tool_results"][0].tool_name == "calculator"

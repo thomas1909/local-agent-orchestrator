@@ -11,6 +11,8 @@ from agent.tools.builtins import (
     _safe_eval,
     calculator,
     delete_file,
+    edit_file,
+    execute_bash,
     list_files,
     read_file,
     search_text,
@@ -41,7 +43,9 @@ def test_default_registry_risk_levels(default_registry):
     assert default_registry.get_risk("read_file") == RiskLevel.LOW
     assert default_registry.get_risk("search_text") == RiskLevel.LOW
     assert default_registry.get_risk("calculator") == RiskLevel.LOW
+    assert default_registry.get_risk("edit_file") == RiskLevel.LOW
     assert default_registry.get_risk("rag_fiscal") == RiskLevel.MEDIUM
+    assert default_registry.get_risk("execute_bash") == RiskLevel.HIGH
     assert default_registry.get_risk("delete_file") == RiskLevel.HIGH
 
 
@@ -60,7 +64,8 @@ def test_has_tool():
 def test_list_tools_returns_all(default_registry):
     names = {t["name"] for t in default_registry.list_tools()}
     assert names == {
-        "list_files", "read_file", "search_text", "calculator", "rag_fiscal", "delete_file",
+        "list_files", "read_file", "search_text", "calculator",
+        "rag_fiscal", "edit_file", "execute_bash", "delete_file",
     }
 
 
@@ -177,3 +182,56 @@ def test_delete_file_is_sandboxed():
     assert "simulée" in result.lower()
     assert Path(name).exists(), "delete_file must NOT actually remove the file"
     assert read_file(name) == "keep me"
+
+
+# ── edit_file (LOW risk) ──────────────────────────────────────────────────────
+
+def test_edit_file_creates_new_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp, "new.txt")
+        result = edit_file(str(target), "bonjour")
+        assert "Fichier écrit" in result
+        assert target.read_text() == "bonjour"
+
+
+def test_edit_file_overwrites_existing():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp, "existing.txt")
+        target.write_text("old content", encoding="utf-8")
+        result = edit_file(str(target), "new content")
+        assert "Fichier écrit" in result
+        assert target.read_text() == "new content"
+
+
+def test_edit_file_creates_parent_dirs():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp, "sub", "dir", "deep.txt")
+        result = edit_file(str(target), "deep write")
+        assert "Fichier écrit" in result
+        assert target.read_text() == "deep write"
+
+
+def test_edit_file_reports_character_count():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp, "count.txt")
+        content = "a" * 42
+        result = edit_file(str(target), content)
+        assert "42 caractères" in result
+
+
+# ── execute_bash (HIGH risk, sandboxed) ────────────────────────────────────────
+
+def test_execute_bash_is_sandboxed():
+    """execute_bash must never run a real command — returns simulated output."""
+    result = execute_bash("rm -rf /", timeout=5)
+    assert "simulé" in result.lower()
+    assert "rm -rf /" in result
+    assert "timeout=5s" in result
+
+
+def test_execute_bash_risk_is_high(default_registry):
+    assert default_registry.get_risk("execute_bash") == RiskLevel.HIGH
+
+
+def test_edit_file_risk_is_low(default_registry):
+    assert default_registry.get_risk("edit_file") == RiskLevel.LOW

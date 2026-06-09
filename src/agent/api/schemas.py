@@ -26,6 +26,11 @@ class ApproveRequest(BaseModel):
     note: str = ""
 
 
+# Alias for main.py — clear name for the request body
+RunCreate = RunRequest
+ApprovalDecision = ApproveRequest
+
+
 # ── Responses ─────────────────────────────────────────────────────────────────
 
 class RunCreateResponse(BaseModel):
@@ -60,5 +65,6 @@ class ApproveResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     api: str
-    ollama: Literal["online", "offline"]
-    version: str = "0.2.0"
+    cloud_models: dict[str, str] = Field(default_factory=dict)
+    validated: bool = True
+    version: str = "0.3.0"
