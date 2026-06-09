@@ -1,165 +1,123 @@
 """FastAPI app — agent orchestrator HTTP API on :8100."""
 from __future__ import annotations
 
-import json
+import logging
+from contextlib import asynccontextmanager
 
-import anyio
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException
 
-from agent.api.deps import get_llm, get_registry, get_trace
-from agent.api.runner import execute_run
-from agent.api.schemas import (
-    ApproveRequest,
-    ApproveResponse,
-    HealthResponse,
-    RunCreateResponse,
-    RunDetail,
-    RunRequest,
-    RunSummary,
-)
-from agent.llm import OllamaClient
+from agent.cloud_client import CloudClient, CloudModelError
+from agent.config import get_config
 from agent.schemas import TaskRequest
-from agent.tools.registry import ToolRegistry
-from agent.trace import TraceStore
+from agent.api.schemas import ApprovalDecision, RunCreate
+
+from .deps import get_clients, get_llm, get_registry, get_trace, init_clients
+from .runner import execute_run
+from .schemas import HealthResponse
+
+logger = logging.getLogger(__name__)
+
+# ── Lifespan: create CloudClients at startup ────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        clients = init_clients()
+        logger.info("CloudClients initialized: %s", {r: c.model for r, c in clients.items()})
+    except (ValueError, CloudModelError) as exc:
+        logger.error("Startup validation failed: %s", exc)
+        raise SystemExit(f"Cloud model validation failed: {exc}") from exc
+    yield
+
+
+# ── App ────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="Agent Local",
-    description="Local agent orchestrator — LangGraph + Ollama + RAG fiscal",
-    version="0.2.0",
+    title="Agent Local — cloud-only orchestrator",
+    version="0.3.0",
+    lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-# ── Mount MCP (optional — graceful if fastapi-mcp API changes) ────────────────
-try:
-    from fastapi_mcp import FastApiMCP  # type: ignore[import]
-    _mcp = FastApiMCP(app, name="Agent Local")
-    _mcp.mount_http()
-except Exception:
-    pass  # MCP is optional; never break the main API
+# ── Endpoints ──────────────────────────────────────────────────────────────────
 
-
-# ── Health ────────────────────────────────────────────────────────────────────
-
-@app.get("/health", response_model=HealthResponse, tags=["ops"])
-async def health(llm: OllamaClient = Depends(get_llm)) -> HealthResponse:
-    """API + Ollama status."""
-    ollama_status = "offline" if llm.is_fallback_mode() else "online"
-    return HealthResponse(status="ok", api="agent-local", ollama=ollama_status)
-
-
-# ── Runs ──────────────────────────────────────────────────────────────────────
-
-@app.post("/run", response_model=RunCreateResponse, tags=["runs"])
-async def create_run(
-    req: RunRequest,
-    background_tasks: BackgroundTasks,
-    llm: OllamaClient = Depends(get_llm),
-    registry: ToolRegistry = Depends(get_registry),
-    trace: TraceStore = Depends(get_trace),
-) -> RunCreateResponse:
-    """Submit a new task. Returns run_id immediately; execution runs in background."""
-    task = TaskRequest(question=req.question, context=req.context)
-    run_id = trace.new_run(task)
-    background_tasks.add_task(execute_run, run_id, task, llm, registry, trace)
-    return RunCreateResponse(run_id=run_id, status="running")
-
-
-@app.get("/runs", response_model=list[RunSummary], tags=["runs"])
-async def list_runs(trace: TraceStore = Depends(get_trace)) -> list[RunSummary]:
-    """List all runs (most recent first)."""
-    rows = trace.list_runs()
-    return [RunSummary(**r) for r in rows]
-
-
-@app.get("/runs/{run_id}", response_model=RunDetail, tags=["runs"])
-async def get_run(run_id: str, trace: TraceStore = Depends(get_trace)) -> RunDetail:
-    """Full run detail including trace spans."""
-    record = trace.export_run(run_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
-    return RunDetail(
-        id=record.id,
-        task=record.task,
-        status=record.status,
-        plan=record.plan,
-        result=record.result,
-        review=record.review,
-        approval=record.approval,
-        spans=record.spans,
+@app.get("/health", response_model=HealthResponse)
+async def health(clients: dict[str, CloudClient] = Depends(get_clients)) -> HealthResponse:
+    return HealthResponse(
+        status="ok",
+        api="agent-local",
+        cloud_models={role: client.model for role, client in clients.items()},
+        validated=all(
+            any(s in client.model for s in (":cloud", "-cloud"))
+            for client in clients.values()
+        ),
     )
 
 
-@app.post("/runs/{run_id}/approve", response_model=ApproveResponse, tags=["runs"])
+@app.post("/run", status_code=201)
+async def create_run(
+    body: RunCreate,
+    clients: dict[str, CloudClient] = Depends(get_clients),
+    registry=Depends(get_registry),
+    trace=Depends(get_trace),
+):
+    task = TaskRequest(question=body.question)
+    run_id = trace.new_run(task)
+    trace.set_run_status(run_id, "running")
+
+    import asyncio
+    asyncio.create_task(
+        execute_run(run_id, task, clients, registry, trace)
+    )
+    return {"run_id": run_id, "status": "running"}
+
+
+@app.get("/runs")
+async def list_runs(trace=Depends(get_trace)):
+    return trace.list_runs()
+
+
+@app.get("/runs/{run_id}")
+async def get_run(run_id: str, trace=Depends(get_trace)):
+    detail = trace.get_run_detail(run_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return detail
+
+
+@app.post("/runs/{run_id}/approve", status_code=200)
 async def approve_run(
     run_id: str,
-    req: ApproveRequest,
-    background_tasks: BackgroundTasks,
-    llm: OllamaClient = Depends(get_llm),
-    registry: ToolRegistry = Depends(get_registry),
-    trace: TraceStore = Depends(get_trace),
-) -> ApproveResponse:
-    """Approve, reject, or request modification of a run awaiting human review."""
-    status = trace.get_run_status(run_id)
-    if status is None:
-        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
-    if status != "approval_required":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Run '{run_id}' is not awaiting approval (status: {status})",
+    body: ApprovalDecision,
+    clients: dict[str, CloudClient] = Depends(get_clients),
+    registry=Depends(get_registry),
+    trace=Depends(get_trace),
+):
+    detail = trace.get_run_detail(run_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run_status = detail.get("status", "")
+    if run_status != "approval_required":
+        raise HTTPException(status_code=409, detail="Run is not pending approval")
+
+    if body.decision == "accept":
+        task_data = detail.get("task", {})
+        task = TaskRequest(
+            id=task_data.get("id", run_id),
+            question=task_data.get("question", ""),
         )
-
-    if req.decision == "accept":
-        task = trace.get_run_task(run_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail="Could not load run task")
-        background_tasks.add_task(execute_run, run_id, task, llm, registry, trace, True)
-        return ApproveResponse(
-            ok=True, run_id=run_id, message="Approved — re-executing with HIGH-risk tools"
+        trace.set_run_status(run_id, "running")
+        import asyncio
+        asyncio.create_task(
+            execute_run(run_id, task, clients, registry, trace, approved=True)
         )
+        return {"ok": True, "run_id": run_id, "message": "Run approved — resuming"}
 
-    if req.decision == "reject":
-        trace.set_run_status(run_id, "failed")
-        return ApproveResponse(ok=True, run_id=run_id, message="Run rejected")
+    if body.decision == "modify":
+        # modify — not fully implemented in Phase 2
+        return {"ok": True, "run_id": run_id, "message": "Modification acknowledged (Phase 3)"}
 
-    # modify — not fully implemented in Phase 2
-    return ApproveResponse(
-        ok=True, run_id=run_id, message="Modification acknowledged (Phase 3)"
-    )
-
-
-# ── SSE stream ────────────────────────────────────────────────────────────────
-
-@app.get("/runs/{run_id}/stream", tags=["runs"])
-async def stream_run_events(
-    run_id: str, trace: TraceStore = Depends(get_trace)
-) -> StreamingResponse:
-    """Server-Sent Events: pushes spans and a final 'done' event for a run."""
-
-    async def _generate():
-        seen: set[str] = set()
-        for _ in range(600):  # 300 s max
-            spans = trace.get_spans(run_id)
-            for span in spans:
-                if span.id not in seen:
-                    seen.add(span.id)
-                    yield f"data: {span.model_dump_json()}\n\n"
-
-            run_status = trace.get_run_status(run_id)
-            if run_status in ("completed", "failed", "approval_required"):
-                yield f"data: {json.dumps({'event': 'done', 'status': run_status})}\n\n"
-                return
-
-            await anyio.sleep(0.5)
-
-        yield 'data: {"event": "timeout"}\n\n'
-
-    return StreamingResponse(_generate(), media_type="text/event-stream")
+    # reject
+    trace.set_run_status(run_id, "failed")
+    return {"ok": True, "run_id": run_id, "message": "Run rejected"}

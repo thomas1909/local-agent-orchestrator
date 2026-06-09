@@ -250,6 +250,17 @@ class TraceStore:
             status=row["status"],
         )
 
+    def get_run_detail(self, run_id: str) -> dict | None:
+        """Return a JSON-friendly dict for the API endpoint."""
+        record = self.export_run(run_id)
+        if record is None:
+            return None
+        d = record.model_dump()
+        # Ensure task is a dict (for API JSON response)
+        if isinstance(d.get("task"), dict):
+            d["task"] = d["task"]
+        return d
+
     def export_run_json(self, run_id: str) -> str | None:
         record = self.export_run(run_id)
         if record is None:

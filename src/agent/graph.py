@@ -1,4 +1,11 @@
-"""LangGraph 5-node agent graph: intake → plan → research → write → review."""
+"""LangGraph 5-node agent graph: intake → plan → research → write → review.
+
+Each node uses the CloudClient for its designated role:
+  - plan → supervisor
+  - research → coder or researcher (based on tool)
+  - write → researcher
+  - review → reviewer
+"""
 from __future__ import annotations
 
 import uuid
@@ -6,7 +13,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from agent.llm import OllamaClient
+from agent.cloud_client import CloudClient
 from agent.schemas import (
     AgentResult,
     ApprovalRequest,
@@ -59,9 +66,15 @@ def _intake(state: GraphState, *, trace: TraceStore) -> GraphState:
     return {"_root_span": span_id}
 
 
-def _plan(state: GraphState, *, llm: OllamaClient, trace: TraceStore) -> GraphState:
+def _plan(
+    state: GraphState,
+    *,
+    clients: dict[str, CloudClient],
+    trace: TraceStore,
+) -> GraphState:
     run_id = state["run_id"]
     task: TaskRequest = state["task"]
+    llm = clients["supervisor"]
 
     span_id = trace.start_span(run_id, "plan", parent_id=state.get("_root_span"))
     plan = llm.predict(
@@ -132,7 +145,12 @@ def _research(state: GraphState, *, registry: ToolRegistry, trace: TraceStore) -
     return {"tool_results": tool_results, "approval_needed": approval_needed}
 
 
-def _write(state: GraphState, *, llm: OllamaClient, trace: TraceStore) -> GraphState:
+def _write(
+    state: GraphState,
+    *,
+    clients: dict[str, CloudClient],
+    trace: TraceStore,
+) -> GraphState:
     run_id = state["run_id"]
     task: TaskRequest = state["task"]
     tool_results: list[ToolResult] = state.get("tool_results", [])
@@ -147,6 +165,8 @@ def _write(state: GraphState, *, llm: OllamaClient, trace: TraceStore) -> GraphS
         trace.save_result(run_id, result)
         trace.end_span(span_id, data={"answer_len": len(result.answer)})
         return {"result": result}
+
+    llm = clients["researcher"]
 
     if tool_results:
         context = "\n\n".join(
@@ -165,7 +185,9 @@ def _write(state: GraphState, *, llm: OllamaClient, trace: TraceStore) -> GraphS
     result = llm.predict(messages=messages, response_model=AgentResult, task=task)
 
     # When in fallback mode but tool results are available, use them directly
-    if result.answer.startswith("[Mode hors-ligne]") and tool_results:
+    from agent.cloud_client import _FALLBACK_MARKER
+
+    if result.answer.startswith(_FALLBACK_MARKER) and tool_results:
         best = next((r for r in tool_results if not r.error), None)
         if best:
             result = AgentResult(
@@ -180,7 +202,13 @@ def _write(state: GraphState, *, llm: OllamaClient, trace: TraceStore) -> GraphS
     return {"result": result}
 
 
-def _review(state: GraphState, *, registry: ToolRegistry, trace: TraceStore) -> GraphState:
+def _review(
+    state: GraphState,
+    *,
+    clients: dict[str, CloudClient],
+    registry: ToolRegistry,
+    trace: TraceStore,
+) -> GraphState:
     run_id = state["run_id"]
     task: TaskRequest = state["task"]
     plan: ExecutionPlan | None = state.get("plan")
@@ -211,21 +239,25 @@ def _review(state: GraphState, *, registry: ToolRegistry, trace: TraceStore) -> 
         trace.end_span(span_id, data={"verdict": "approval_required", "tools": high_risk})
         return {"review": review, "approval": approval}
 
-    review = ReviewResult(
-        task_id=task.id,
-        verdict="approved",
-        notes="Réponse vérifiée automatiquement.",
+    llm = clients["reviewer"]
+    review = llm.predict(
+        messages=[
+            {"role": "system", "content": "Tu es un réviseur. Valide la cohérence et la qualité du résultat."},
+            {"role": "user", "content": f"Question: {task.question}\nRéponse: {state.get('result', '')}"},
+        ],
+        response_model=ReviewResult,
+        task=task,
     )
     trace.save_review(run_id, review)
     trace.finish_run(run_id, "completed")
-    trace.end_span(span_id, data={"verdict": "approved"})
+    trace.end_span(span_id, data={"verdict": review.verdict})
     return {"review": review}
 
 
 # ── Graph builder ─────────────────────────────────────────────────────────────
 
 def build_graph(
-    llm: OllamaClient,
+    clients: dict[str, CloudClient],
     registry: ToolRegistry,
     trace: TraceStore,
 ):
@@ -233,10 +265,10 @@ def build_graph(
     builder = StateGraph(GraphState)
 
     builder.add_node("intake", lambda s: _intake(s, trace=trace))
-    builder.add_node("plan", lambda s: _plan(s, llm=llm, trace=trace))
+    builder.add_node("plan", lambda s: _plan(s, clients=clients, trace=trace))
     builder.add_node("research", lambda s: _research(s, registry=registry, trace=trace))
-    builder.add_node("write", lambda s: _write(s, llm=llm, trace=trace))
-    builder.add_node("review", lambda s: _review(s, registry=registry, trace=trace))
+    builder.add_node("write", lambda s: _write(s, clients=clients, trace=trace))
+    builder.add_node("review", lambda s: _review(s, clients=clients, registry=registry, trace=trace))
 
     builder.set_entry_point("intake")
     builder.add_edge("intake", "plan")
@@ -252,7 +284,7 @@ def build_graph(
 
 def run_task(
     task: TaskRequest,
-    llm: OllamaClient,
+    clients: dict[str, CloudClient],
     registry: ToolRegistry,
     trace: TraceStore,
     approved: bool = False,
@@ -260,6 +292,6 @@ def run_task(
     run_id = trace.new_run(task)
     state = _initial_state(task, approved=approved)
     state["run_id"] = run_id
-    graph = build_graph(llm=llm, registry=registry, trace=trace)
+    graph = build_graph(clients=clients, registry=registry, trace=trace)
     final = graph.invoke(state)
     return final

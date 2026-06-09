@@ -1,13 +1,20 @@
-"""Shared fixtures — all offline (no Ollama, no network)."""
+"""Shared fixtures — all offline (no cloud calls, no network)."""
 from __future__ import annotations
 
 import pytest
 
-from agent.llm import OllamaClient
+from agent.cloud_client import CloudClient
 from agent.schemas import ExecutionPlan, SubTask, TaskRequest, ToolCall
 from agent.tools.builtins import build_default_registry
 from agent.tools.registry import ToolRegistry
 from agent.trace import TraceStore
+
+_CLOUD_MODELS = {
+    "supervisor": "glm-5.1:cloud",
+    "coder": "qwen3-coder:480b-cloud",
+    "researcher": "minimax-m3:cloud",
+    "reviewer": "glm-5.1:cloud",
+}
 
 
 @pytest.fixture()
@@ -17,9 +24,14 @@ def trace() -> TraceStore:
 
 
 @pytest.fixture()
-def fallback_llm() -> OllamaClient:
-    """OllamaClient that always uses the deterministic fallback (no Ollama call)."""
-    return OllamaClient(force_fallback=True)
+def fallback_llm() -> CloudClient:
+    """CloudClient in fallback mode (no cloud calls, deterministic routing)."""
+    return CloudClient(
+        role="supervisor",
+        models=_CLOUD_MODELS,
+        force_fallback=True,
+        require_cloud=False,
+    )
 
 
 @pytest.fixture()

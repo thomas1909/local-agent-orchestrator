@@ -16,7 +16,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "fastapi-mcp>=0.3",
     "anyio>=4.0",
-    "openai>=2.41.0",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
